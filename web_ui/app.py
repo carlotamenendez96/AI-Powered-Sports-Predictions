@@ -1442,6 +1442,9 @@ def _run_auto_cashout_sweep(backend, shadow=None):
 # badge a human has to click.
 _AUTO_CASHOUT_ARM_PATH = os.path.join(OUTPUT_DIR, 'auto_cashout_armed.json')
 _AUTO_CASHOUT_INTERVAL_S = 10 * 60
+# How long after kickoff a match can still be in play: 90' + half-time +
+# stoppage + a buffer for late kickoffs.
+_LIVE_MATCH_WINDOW_S = 150 * 60
 
 
 def _read_auto_cashout_state():
@@ -1478,6 +1481,45 @@ def _set_auto_cashout_armed(on: bool, shadow=None):
                        'changed': datetime.datetime.now().isoformat(timespec='seconds')}, f)
     except OSError:
         pass
+
+
+def _live_window_active(now=None):
+    """Is any OPEN bet's match plausibly in play right now?
+
+    The scheduler scrapes Flashscore on every tick, but a day's slate leaves
+    long dead stretches (a typical day has an ~12h gap between the early
+    matches finishing and the evening kickoffs), and scraping through those
+    is pure waste. A match counts as in play from its kickoff until
+    `_LIVE_MATCH_WINDOW_S` after it.
+
+    Fails OPEN — if there are OPEN bets but no parseable kickoff among them,
+    return True. Silently suppressing collection is a worse failure than an
+    unnecessary scrape, and a stalled collector is exactly what went unnoticed
+    for three months.
+    """
+    now = now or datetime.datetime.now()
+    window = datetime.timedelta(seconds=_LIVE_MATCH_WINDOW_S)
+    any_open = False
+    parsed_any = False
+    for slip_path in glob.glob(os.path.join(OUTPUT_DIR, 'bets_*.json')):
+        try:
+            with open(slip_path) as f:
+                slip = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            continue
+        for b in slip.get('bets', []):
+            if b.get('status') != 'OPEN':
+                continue
+            any_open = True
+            raw = b.get('date') or ''
+            try:
+                ko = datetime.datetime.strptime(raw, '%Y-%m-%d %H:%M')
+            except (TypeError, ValueError):
+                continue
+            parsed_any = True
+            if ko <= now <= ko + window:
+                return True
+    return any_open and not parsed_any
 
 
 @football_bp.route('/auto_cashout', methods=['POST'])
@@ -2932,6 +2974,7 @@ def _auto_cashout_scheduler():
     import logging
     log = logging.getLogger('auto_cashout')
     last_run = 0.0
+    in_window = None            # None = unknown; log only on transitions
     while True:
         time.sleep(20)  # cheap when idle; responsive to arm/disarm
         try:
@@ -2939,6 +2982,15 @@ def _auto_cashout_scheduler():
                 continue
             now = time.time()
             if now - last_run < _AUTO_CASHOUT_INTERVAL_S:
+                continue
+            # Don't scrape when nothing can be in play — a day's slate leaves
+            # long dead stretches and Flashscore gains us nothing across them.
+            active = _live_window_active()
+            if active != in_window:
+                log.warning('auto-cashout live window %s',
+                            'OPEN — scraping resumes' if active else 'CLOSED — scraping paused')
+                in_window = active
+            if not active:
                 continue
             last_run = now
             # Use a running scrape if one exists, else launch one; then wait.
