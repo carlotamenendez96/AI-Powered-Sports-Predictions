@@ -30,8 +30,15 @@
             <div class="form-check form-check-inline ms-1 mb-0">
                 <input class="form-check-input" type="checkbox" id="autoCashout" {% if auto_cashout_armed %}checked{% endif %}>
                 <label class="form-check-label small text-white" for="autoCashout"
-                       title="Arm SERVER-SIDE auto-cashout: every 10 min the server refreshes Flashscore and automatically cashes out OPEN bets whose live decision is lock-in or stop-loss, at the ESTIMATED fair value. Runs even with no browser tab open. Virtual money only — no real bet is placed.">
+                       title="Arm SERVER-SIDE auto-cashout: every 10 min the server refreshes Flashscore and evaluates OPEN bets whose live decision is lock-in or stop-loss. Runs even with no browser tab open. Virtual money only — no real bet is placed.">
                     Auto-cashout
+                </label>
+            </div>
+            <div class="form-check form-check-inline ms-1 mb-0">
+                <input class="form-check-input" type="checkbox" id="autoCashoutShadow" {% if auto_cashout_shadow %}checked{% endif %}>
+                <label class="form-check-label small text-white" for="autoCashoutShadow"
+                       title="Shadow mode: evaluate and LOG every cashout decision but fire nothing. Cashout is priced at fair value (stake x odds x adj_prob x 0.95), which is EV-negative by exactly that haircut — so shadow accrues decision data at zero cost. Untick to let the sweep actually cash out.">
+                    Shadow
                 </label>
             </div>
             <form action="/football/clear_live" method="post" class="d-inline ms-2">
@@ -324,11 +331,24 @@
             });
         }
 
+        // Each checkbox posts ONLY the field it owns; the server preserves any
+        // field it isn't sent. Never echo back both — a tab rendered before the
+        // other setting changed would silently overwrite it, and in the shadow
+        // case that means re-enabling real firing behind the user's back.
+        const cbShadow = document.getElementById('autoCashoutShadow');
+        function postArm(field, value, revert) {
+            const body = new URLSearchParams({ [field]: value ? '1' : '0' });
+            fetch('/football/auto_cashout/arm', { method: 'POST', body })
+                .catch(revert);
+        }
         if (cbCash) {
             cbCash.addEventListener('change', () => {
-                const body = new URLSearchParams({ on: cbCash.checked ? '1' : '0' });
-                fetch('/football/auto_cashout/arm', { method: 'POST', body })
-                    .catch(() => { cbCash.checked = !cbCash.checked; });  // revert on failure
+                postArm('on', cbCash.checked, () => { cbCash.checked = !cbCash.checked; });
+            });
+        }
+        if (cbShadow) {
+            cbShadow.addEventListener('change', () => {
+                postArm('shadow', cbShadow.checked, () => { cbShadow.checked = !cbShadow.checked; });
             });
         }
     })();

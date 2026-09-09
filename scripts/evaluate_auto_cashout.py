@@ -93,9 +93,16 @@ def main():
         print(f"No audit log at {LOG_PATH} — nothing auto-cashed yet.")
         return 0
 
-    # Executed cashouts, deduped by bet_id (a bet flips to CASHED_OUT after
-    # the first firing, so later sweeps skip it; dedupe defensively anyway).
-    fired = {}
+    # Cashout events, deduped by bet_id keeping the FIRST occurrence.
+    #
+    # Executed rows: a bet flips to CASHED_OUT after the first firing, so
+    # later sweeps skip it (dedupe defensively anyway).
+    #
+    # Shadow rows: nothing fires, so the bet stays OPEN and is re-evaluated
+    # every sweep for the rest of its live window. The first non-hold entry
+    # is the would-have-fired moment — later ones are the same decision
+    # repeated and must not be counted again.
+    fired, shadowed = {}, {}
     with open(LOG_PATH) as f:
         for line in f:
             line = line.strip()
@@ -105,32 +112,44 @@ def main():
                 e = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if e.get('executed') and e.get('bet_id') and e['bet_id'] not in fired:
-                fired[e['bet_id']] = e
+            bid = e.get('bet_id')
+            if not bid:
+                continue
+            if e.get('executed'):
+                fired.setdefault(bid, e)
+            elif e.get('would_fire'):
+                shadowed.setdefault(bid, e)
 
-    if not fired:
-        print("Audit log has no EXECUTED cashouts yet (only held evaluations).")
+    # A bet that was shadow-logged and later fired for real is counted as
+    # executed only — the real event supersedes its own counterfactual.
+    shadowed = {k: v for k, v in shadowed.items() if k not in fired}
+
+    if not fired and not shadowed:
+        print("Audit log has no cashouts to score yet (only held evaluations).")
         return 0
 
     verifs = _load_verifications()
-    scored, pending = [], []
-    for bid, e in fired.items():
-        date = bid.split(':', 1)[0] if ':' in bid else ''
-        row = (verifs.get(date) or {}).get(_norm(e.get('match')))
-        if row is None:
-            pending.append(e)
-            continue
-        won = _selection_won(e.get('type'), e.get('selection'), row)
-        if won is None:
-            pending.append(e)
-            continue
-        stake = float(e.get('stake') or 0)
-        odds = float(e.get('odds') or 0)
-        cash = float(e.get('amount') or 0)
-        held = stake * odds if won else 0.0
-        scored.append({**e, 'won': won, 'score': row.get('Score'),
-                       'held_return': round(held, 2), 'cash_return': round(cash, 2),
-                       'delta': round(cash - held, 2)})
+
+    def score(events, mode):
+        scored, pending = [], []
+        for bid, e in events.items():
+            date = bid.split(':', 1)[0] if ':' in bid else ''
+            row = (verifs.get(date) or {}).get(_norm(e.get('match')))
+            if row is None:
+                pending.append(e)
+                continue
+            won = _selection_won(e.get('type'), e.get('selection'), row)
+            if won is None:
+                pending.append(e)
+                continue
+            stake = float(e.get('stake') or 0)
+            odds = float(e.get('odds') or 0)
+            cash = float(e.get('amount') or 0)
+            held = stake * odds if won else 0.0
+            scored.append({**e, 'mode': mode, 'won': won, 'score': row.get('Score'),
+                           'held_return': round(held, 2), 'cash_return': round(cash, 2),
+                           'delta': round(cash - held, 2)})
+        return scored, pending
 
     # Aggregate.
     def agg(items):
@@ -139,22 +158,39 @@ def main():
         return {'n': len(items), 'cash': round(cash, 2), 'held': round(held, 2),
                 'net_delta': round(cash - held, 2)}
 
-    overall = agg(scored)
-    by_dec = {d: agg([x for x in scored if x['decision'] == d])
-              for d in ('lock_in', 'stop_loss') if any(x['decision'] == d for x in scored)}
-    saved = round(sum(x['cash_return'] for x in scored if not x['won']), 2)
-    given_up = round(sum(x['held_return'] - x['cash_return'] for x in scored if x['won']), 2)
-    would_win = sum(1 for x in scored if x['won'])
+    def summarize(scored):
+        return {
+            'overall': agg(scored),
+            'by_decision': {d: agg([x for x in scored if x['decision'] == d])
+                            for d in ('lock_in', 'stop_loss')
+                            if any(x['decision'] == d for x in scored)},
+            'stop_loss_saved_vs_losing':
+                round(sum(x['cash_return'] for x in scored if not x['won']), 2),
+            'lock_in_given_up_vs_winning':
+                round(sum(x['held_return'] - x['cash_return'] for x in scored if x['won']), 2),
+            'cashed_bets_that_would_have_won': sum(1 for x in scored if x['won']),
+            'details': sorted(scored, key=lambda x: x['delta']),
+        }
+
+    scored, pending = score(fired, 'executed')
+    shadow_scored, shadow_pending = score(shadowed, 'shadow')
 
     report = {
-        'cashouts_executed': len(fired), 'scored': len(scored), 'pending_settlement': len(pending),
-        'overall': overall, 'by_decision': by_dec,
-        'stop_loss_saved_vs_losing': saved,
-        'lock_in_given_up_vs_winning': given_up,
-        'cashed_bets_that_would_have_won': would_win,
+        'cashouts_executed': len(fired), 'scored': len(scored),
+        'pending_settlement': len(pending),
+        **summarize(scored),
+        'shadow': {
+            'would_fire': len(shadowed), 'scored': len(shadow_scored),
+            'pending_settlement': len(shadow_pending),
+            **summarize(shadow_scored),
+        },
         'caveat': 'cash_return is the SYNTHETIC estimate (no real haircut) → Σcash optimistic.',
-        'details': sorted(scored, key=lambda x: x['delta']),
     }
+    overall = report['overall']
+    by_dec = report['by_decision']
+    saved = report['stop_loss_saved_vs_losing']
+    given_up = report['lock_in_given_up_vs_winning']
+    would_win = report['cashed_bets_that_would_have_won']
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     with open(os.path.join(OUTPUT_DIR, 'auto_cashout_eval.json'), 'w') as f:
         json.dump(report, f, indent=2)
@@ -163,6 +199,8 @@ def main():
     print("=== Auto-cashout decision evaluation (cash vs hold-to-settlement) ===")
     print(f"executed cashouts: {len(fired)}   scored: {len(scored)}   "
           f"pending settlement: {len(pending)}")
+    if not scored and shadowed:
+        print("  (no real cashouts — running in shadow mode; see SHADOW section below)")
     if scored:
         o = overall
         verdict = ("auto-cashout BEAT holding" if o['net_delta'] > 0 else
@@ -184,9 +222,33 @@ def main():
             print(f"    {x['match'][:34]:<34} {x['decision']:<9} {x['selection']:<9} "
                   f"score={x['score']} cash=€{x['cash_return']:.2f} held=€{x['held_return']:.2f} "
                   f"Δ€{x['delta']:+.2f}")
-    if pending:
-        print(f"\n  {len(pending)} cashout(s) await settlement (no verification row yet) "
-              f"— re-run after the next verification.")
+    if shadow_scored:
+        s = report['shadow']
+        o = s['overall']
+        verdict = ("would have BEAT holding" if o['net_delta'] > 0 else
+                   "would have COST vs holding" if o['net_delta'] < 0 else "even")
+        print(f"\n=== SHADOW (logged only, no money moved) ===")
+        print(f"would-fire decisions: {s['would_fire']}   scored: {s['scored']}   "
+              f"pending settlement: {s['pending_settlement']}")
+        print(f"  Σ would-cash = €{o['cash']:.2f}")
+        print(f"  Σ if held    = €{o['held']:.2f}")
+        print(f"  net Δ        = €{o['net_delta']:+.2f}   → {verdict}")
+        print(f"  ({s['cashed_bets_that_would_have_won']}/{o['n']} would have WON if held)")
+        for d, a in s['by_decision'].items():
+            print(f"  [{d:<9}] n={a['n']}  would-cash=€{a['cash']:.2f}  "
+                  f"held=€{a['held']:.2f}  netΔ=€{a['net_delta']:+.2f}")
+        # How the synthetic price we decide on compares to the real offer.
+        with_bk = [x for x in shadow_scored if x.get('bookmaker_offer') is not None]
+        if with_bk:
+            d_sum = sum(float(x['bookmaker_offer']) - float(x['cash_return']) for x in with_bk)
+            print(f"\n  real bookmaker offer present on {len(with_bk)}/{len(shadow_scored)}; "
+                  f"Σ(real − synthetic) = €{d_sum:+.2f}")
+            print("  (negative ⇒ the real offer pays LESS than our fair-value estimate, "
+                  "so the synthetic numbers above are optimistic)")
+
+    if pending or shadow_pending:
+        print(f"\n  {len(pending)} executed + {len(shadow_pending)} shadow cashout(s) await "
+              f"settlement (no verification row yet) — re-run after the next verification.")
     print(f"\nReport → {os.path.join(OUTPUT_DIR, 'auto_cashout_eval.json')}")
     print("Caveat: cash_return is the synthetic estimate (no real haircut) → Σcash optimistic.")
     return 0

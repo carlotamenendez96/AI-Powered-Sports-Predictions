@@ -1298,17 +1298,24 @@ def cashout(bet_id):
     return redirect(request.referrer or url_for('football.index'))
 
 
-def _run_auto_cashout_sweep(backend):
+def _run_auto_cashout_sweep(backend, shadow=None):
     """Evaluate every OPEN bet currently on a live match and cash out (via
     the lane-cascading `execute_cashout`) those whose decision is non-`hold`
     (`_cashout_decision`, same thresholds as the display badge). Pricing is
     the synthetic fair-value estimate, so this exercises cashout TIMING/
     MECHANISM, not real bookmaker economics — VIRTUAL money only.
 
+    `shadow` (None = read the persisted flag) evaluates and logs decisions
+    but fires nothing. Fair-value cashout is EV-negative by exactly its 0.95
+    haircut, so shadow is how decision data accrues at zero cost — and each
+    entry also records the real bookmaker offer, which is what lets us later
+    test whether adj_prob beats the real live price.
+
     Pure function (no Flask request context) so BOTH the POST endpoint and
     the autonomous scheduler thread can call it; pass the backend in. Every
-    evaluation (fired or held) is appended to `output/auto_cashout_log.jsonl`.
-    Returns a summary dict."""
+    evaluation (fired, would-have-fired, or held) is appended to
+    `output/auto_cashout_log.jsonl`. Returns a summary dict."""
+    shadow = _auto_cashout_shadow() if shadow is None else bool(shadow)
     live_by_match = {}
     live_path = os.path.join(OUTPUT_DIR, 'live_data.json')
     try:
@@ -1319,7 +1326,8 @@ def _run_auto_cashout_sweep(backend):
             if isinstance(m, dict) and m.get('match'):
                 live_by_match[m['match'].strip()] = m
     except (OSError, json.JSONDecodeError):
-        return {'evaluated': 0, 'cashed_count': 0, 'cashed': [], 'note': 'no live snapshot'}
+        return {'evaluated': 0, 'shadow': shadow, 'cashed_count': 0, 'cashed': [],
+                'would_fire_count': 0, 'would_fire': [], 'note': 'no live snapshot'}
 
     # One representative per conceptual wager (execute_cashout cascades
     # across lanes), so we don't evaluate/fire the same bet_id twice.
@@ -1342,8 +1350,17 @@ def _run_auto_cashout_sweep(backend):
                 b['date'] = slip.get('date')
             representatives.append(b)
 
+    # Real bookmaker offers, loaded once per sweep. These are recorded for
+    # every evaluation but never used to price or decide — the decision still
+    # runs off the synthetic fair value, so shadow logs let us later ask
+    # whether adj_prob actually beats the real live price.
+    bk = _load_bookmaker_offers() or {}
+    bk_all = bk.get('all') or []
+    bk_age_s = bk.get('age_s')
+
     evaluated = 0
     cashed = []
+    would_fire = []
     log_lines = []
     now_iso = datetime.datetime.now().isoformat(timespec='seconds')
     for bet in representatives:
@@ -1362,6 +1379,12 @@ def _run_auto_cashout_sweep(backend):
         decision = _cashout_decision(fair, stake, adj_prob if adj_prob > 0 else None, minute)
         evaluated += 1
 
+        bk_offer = None
+        if bk_all:
+            hit = _match_offer_by_teams(bet.get('home'), bet.get('away'), bk_all)
+            if hit:
+                bk_offer = hit.get('cashout_offer')
+
         entry = {
             'ts': now_iso, 'bet_id': bet.get('bet_id'), 'match': match_str,
             'minute': minute, 'type': bet.get('type'),
@@ -1369,16 +1392,29 @@ def _run_auto_cashout_sweep(backend):
             'odds': bet.get('odds'), 'adj_prob': round(adj_prob, 3),
             'fair_cashout': fair,
             'ratio': round(fair / stake, 3) if (fair and stake) else None,
-            'decision': decision, 'executed': False, 'amount': None,
+            'decision': decision, 'shadow': shadow,
+            'executed': False, 'would_fire': False, 'amount': None,
+            'bookmaker_offer': bk_offer, 'bookmaker_age_s': bk_age_s,
         }
         if decision != 'hold':
-            ok = backend.execute_cashout(bet, lm)
-            if ok:
-                entry['executed'] = True
+            if shadow:
+                # Record the counterfactual and leave the bet OPEN. It will be
+                # re-evaluated next sweep, so scoring must take the FIRST
+                # non-hold entry per bet_id as the would-have-fired moment.
+                entry['would_fire'] = True
                 entry['amount'] = fair
-                cashed.append({'bet_id': bet.get('bet_id'), 'match': match_str,
-                               'decision': decision, 'amount': fair,
-                               'selection': str(bet.get('selection'))})
+                would_fire.append({'bet_id': bet.get('bet_id'), 'match': match_str,
+                                   'decision': decision, 'amount': fair,
+                                   'selection': str(bet.get('selection'))})
+            else:
+                ok = backend.execute_cashout(bet, lm)
+                if ok:
+                    entry['executed'] = True
+                    entry['would_fire'] = True
+                    entry['amount'] = fair
+                    cashed.append({'bet_id': bet.get('bet_id'), 'match': match_str,
+                                   'decision': decision, 'amount': fair,
+                                   'selection': str(bet.get('selection'))})
         log_lines.append(entry)
 
     if log_lines:
@@ -1393,7 +1429,9 @@ def _run_auto_cashout_sweep(backend):
         global _AUTO_CASHOUT_EPOCH
         _AUTO_CASHOUT_EPOCH += 1   # signal live pages to reload (see /status)
 
-    return {'evaluated': evaluated, 'cashed_count': len(cashed), 'cashed': cashed}
+    return {'evaluated': evaluated, 'shadow': shadow,
+            'cashed_count': len(cashed), 'cashed': cashed,
+            'would_fire_count': len(would_fire), 'would_fire': would_fire}
 
 
 # --- Auto-cashout arming (server-side, browser-independent) ----------------
@@ -1406,18 +1444,37 @@ _AUTO_CASHOUT_ARM_PATH = os.path.join(OUTPUT_DIR, 'auto_cashout_armed.json')
 _AUTO_CASHOUT_INTERVAL_S = 10 * 60
 
 
-def _auto_cashout_armed():
+def _read_auto_cashout_state():
     try:
         with open(_AUTO_CASHOUT_ARM_PATH) as f:
-            return bool(json.load(f).get('armed'))
+            return json.load(f) or {}
     except (OSError, json.JSONDecodeError):
-        return False
+        return {}
 
 
-def _set_auto_cashout_armed(on: bool):
+def _auto_cashout_armed():
+    return bool(_read_auto_cashout_state().get('armed'))
+
+
+def _auto_cashout_shadow():
+    """Shadow mode: evaluate + log decisions but fire no cashout.
+
+    Defaults to True when the key is absent so an existing arm file (or a
+    fresh one) never starts moving money on its own — re-enabling real
+    firing has to be an explicit choice. Cashout is priced at fair value
+    (stake x odds x adj_prob x 0.95), which is EV-negative by exactly the
+    haircut, so shadow is how decision data accrues at zero cost.
+    """
+    state = _read_auto_cashout_state()
+    return True if 'shadow' not in state else bool(state.get('shadow'))
+
+
+def _set_auto_cashout_armed(on: bool, shadow=None):
+    """Persist arm state. `shadow=None` preserves the stored shadow flag."""
+    keep = _auto_cashout_shadow() if shadow is None else bool(shadow)
     try:
         with open(_AUTO_CASHOUT_ARM_PATH, 'w') as f:
-            json.dump({'armed': bool(on),
+            json.dump({'armed': bool(on), 'shadow': keep,
                        'changed': datetime.datetime.now().isoformat(timespec='seconds')}, f)
     except OSError:
         pass
@@ -1427,19 +1484,40 @@ def _set_auto_cashout_armed(on: bool):
 def auto_cashout():
     """Run ONE auto-cashout sweep now (manual/diagnostic trigger). The
     scheduler thread runs this autonomously when armed; this endpoint is
-    handy for an immediate sweep against the current snapshot. JSON out."""
-    return jsonify(_run_auto_cashout_sweep(g.backend)), 200
+    handy for an immediate sweep against the current snapshot. JSON out.
+
+    Defaults to the persisted shadow flag; pass `shadow=0|1` to override
+    for this one sweep (e.g. a deliberate real firing while collection
+    otherwise runs in shadow)."""
+    raw = (request.form.get('shadow') or request.args.get('shadow') or '').strip().lower()
+    shadow = None if raw == '' else raw in ('1', 'true', 'on', 'yes')
+    return jsonify(_run_auto_cashout_sweep(g.backend, shadow=shadow)), 200
 
 
 @football_bp.route('/auto_cashout/arm', methods=['POST'])
 def auto_cashout_arm():
     """Arm/disarm the autonomous server-side auto-cashout loop. Body/query
     `on=1|0`. While armed, the background thread refreshes Flashscore and
-    sweeps every 10 min regardless of whether any browser tab is open."""
-    raw = (request.form.get('on') or request.args.get('on') or '').strip().lower()
-    on = raw in ('1', 'true', 'on', 'yes')
-    _set_auto_cashout_armed(on)
-    return jsonify({'armed': on}), 200
+    sweeps every 10 min regardless of whether any browser tab is open.
+
+    `shadow=1|0` (optional) sets whether those sweeps fire for real or only
+    log what they would have done.
+
+    BOTH fields are optional and an omitted one is PRESERVED. Each checkbox
+    posts only the field it owns, so a stale browser tab can never implicitly
+    turn shadow off (which would silently re-enable real firing) by echoing
+    back the state it happened to render with."""
+    def _tri(name):
+        raw = (request.form.get(name) or request.args.get(name) or '').strip().lower()
+        return None if raw == '' else raw in ('1', 'true', 'on', 'yes')
+
+    on = _tri('on')
+    shadow = _tri('shadow')
+    if on is None:
+        on = _auto_cashout_armed()
+    _set_auto_cashout_armed(on, shadow=shadow)
+    return jsonify({'armed': _auto_cashout_armed(),
+                    'shadow': _auto_cashout_shadow()}), 200
 
 
 @football_bp.route('/void_bet/<bet_id>', methods=['POST'])
@@ -2835,6 +2913,7 @@ def live_tabbed():
         active_tab=active_tab,
         live_matches=live_matches[:50],
         auto_cashout_armed=_auto_cashout_armed(),
+        auto_cashout_shadow=_auto_cashout_shadow(),
     )
 
 
@@ -2874,16 +2953,20 @@ def _auto_cashout_scheduler():
             res = _run_auto_cashout_sweep(VirtualBettingBackend(output_dir=OUTPUT_DIR))
             if res.get('cashed_count'):
                 log.warning('auto-cashout fired: %s', res)
+            elif res.get('would_fire_count'):
+                log.warning('auto-cashout SHADOW (nothing fired): %s', res)
         except Exception as e:
             log.warning('auto-cashout tick failed: %s', e)
 
 
 if __name__ == '__main__':
     # Auto-cashout is armed via the dashboard checkbox and persisted to disk.
-    # Disarm on every startup so the loop is never silently running from a
-    # stale flag left over from a prior session (it must be a deliberate,
-    # in-session opt-in). The user re-ticks the checkbox to re-arm.
-    if _auto_cashout_armed():
+    # Disarm REAL firing on every startup so money never moves from a stale
+    # flag left over from a prior session (it must be a deliberate, in-session
+    # opt-in). Shadow arming survives restarts on purpose: it fires nothing,
+    # and silently dropping it on each restart is what stalled collection for
+    # three months.
+    if _auto_cashout_armed() and not _auto_cashout_shadow():
         _set_auto_cashout_armed(False)
     # Autonomous auto-cashout loop (executes server-side, no browser needed).
     import threading
