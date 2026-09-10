@@ -190,11 +190,11 @@
                         <div class="mt-2 pt-2 border-top live-detail" data-live-key="{{ _key }}">
                             <button type="button"
                                     class="btn btn-link btn-sm p-0 mb-1 small text-muted text-decoration-none live-bets-toggle"
-                                    data-live-key="{{ _key }}" aria-expanded="false"
+                                    data-live-key="{{ _key }}" aria-expanded="true"
                                     title="Collapse / expand the open bets on this match">
-                                <span class="live-bets-caret">&#9656;</span> Open bets ({{ item.open_bets|length }})
+                                <span class="live-bets-caret">&#9662;</span> Open bets ({{ item.open_bets|length }})
                             </button>
-                            <div class="live-bets-detail d-none" data-live-key="{{ _key }}">
+                            <div class="live-bets-detail" data-live-key="{{ _key }}">
                                 {% with open_bets = item.open_bets, compact = True %}
                                     {% include '_open_bets_fragment.html' %}
                                 {% endwith %}
@@ -423,10 +423,11 @@
     // what carries them across a swap, since the fresh markup always arrives
     // at its default state and this re-applies the user's choice.
     //   .live-toggle       -> hides stats + markets + the whole open-bets block
-    //                         (default OPEN)
     //   .live-bets-toggle  -> hides just the open-bets rows, keeping the header
-    //                         (default CLOSED — the markup ships collapsed, so
-    //                         there's no flash before this runs)
+    // Both default OPEN, so both store collapsed-keys. wire() still takes the
+    // defaultCollapsed flag: it's what makes the stored set unambiguous, and a
+    // default-closed level would otherwise be indistinguishable from one whose
+    // keys are simply absent from storage.
     // State is keyed by match_id (match name as fallback).
     function wireLiveCollapse() {
         function wire(storageKey, toggleSel, detailSel, caretSel, defaultCollapsed) {
@@ -480,9 +481,10 @@
         }
 
         wire('liveCollapsed', '.live-toggle', '.live-detail', null, false);
-        // Storage key differs from the match level: it stores expanded-keys,
-        // since the default here is closed.
-        wire('liveBetsExpanded', '.live-bets-toggle', '.live-bets-detail', '.live-bets-caret', true);
+        // Back off 'liveBetsExpanded': that key stored EXPANDED keys for the
+        // default-closed variant, which under default-open semantics would read
+        // exactly backwards — as "collapse these".
+        wire('liveBetsCollapsed', '.live-bets-toggle', '.live-bets-detail', '.live-bets-caret', false);
     }
 
     wireLivePanel();
