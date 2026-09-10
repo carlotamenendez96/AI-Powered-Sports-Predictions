@@ -21,7 +21,17 @@
 {% if live_matches %}
 <div class="card mb-4 border-danger">
     <div class="card-header bg-danger text-white d-flex justify-content-between align-items-center">
-        <span>⚡ Live Match Analysis & Adjustments</span>
+        <div class="d-flex align-items-center gap-2">
+            <span>⚡ Live Match Analysis &amp; Adjustments</span>
+            {# Bulk collapse. Labels are rewritten by refreshBulkLabels() to
+               match what a press would actually do. #}
+            <div class="btn-group btn-group-sm" role="group">
+                <button type="button" class="btn btn-outline-light" id="collapseAllMatches"
+                        title="Collapse or expand every match on the slate">Collapse all</button>
+                <button type="button" class="btn btn-outline-light" id="collapseAllBets"
+                        title="Collapse or expand the open-bets strip on every match">Collapse bets</button>
+            </div>
+        </div>
         <div class="btn-group">
             <form action="/football/refresh_live" method="post" class="d-inline" onsubmit="triggerLive(event)">
                 <button type="submit" class="btn btn-sm btn-light text-danger fw-bold" id="refreshLiveBtn">⚡ Refresh
@@ -461,16 +471,20 @@
                 });
             }
 
+            function setOne(key, collapsedNow) {
+                collapsedNow !== defaultCollapsed ? flipped.add(key) : flipped.delete(key);
+                apply(key, collapsedNow);
+            }
+
             const onPage = new Set();
             toggles.forEach(btn => {
                 const key = btn.dataset.liveKey;
                 onPage.add(key);
                 apply(key, isCollapsed(key));
                 btn.addEventListener('click', () => {
-                    const next = !isCollapsed(key);
-                    next !== defaultCollapsed ? flipped.add(key) : flipped.delete(key);
+                    setOne(key, !isCollapsed(key));
                     save();
-                    apply(key, next);
+                    refreshBulkLabels();
                 });
             });
 
@@ -478,13 +492,57 @@
             // grow without bound across days.
             const kept = [...flipped].filter(k => onPage.has(k));
             if (kept.length !== flipped.size) { flipped = new Set(kept); save(); }
+
+            // Handle for the header's bulk buttons.
+            return {
+                setAll(collapsedNow) {
+                    onPage.forEach(key => setOne(key, collapsedNow));
+                    save();
+                    refreshBulkLabels();
+                },
+                allCollapsed: () => [...onPage].every(isCollapsed),
+            };
         }
 
-        wire('liveCollapsed', '.live-toggle', '.live-detail', null, false);
+        liveLevels.match = wire('liveCollapsed', '.live-toggle', '.live-detail', null, false);
         // Back off 'liveBetsExpanded': that key stored EXPANDED keys for the
         // default-closed variant, which under default-open semantics would read
         // exactly backwards — as "collapse these".
-        wire('liveBetsCollapsed', '.live-bets-toggle', '.live-bets-detail', '.live-bets-caret', false);
+        liveLevels.bets = wire('liveBetsCollapsed', '.live-bets-toggle', '.live-bets-detail', '.live-bets-caret', false);
+
+        bindBulk('collapseAllMatches', liveLevels.match);
+        bindBulk('collapseAllBets', liveLevels.bets);
+        refreshBulkLabels();
+    }
+
+    // Header bulk buttons. Each press does whatever the label says: collapse
+    // everything unless everything is already collapsed, in which case expand.
+    // Collapsing all matches also hides the bets strips (they're nested), so
+    // the bets button is disabled while that's the case — it would be a no-op
+    // the user couldn't see.
+    const liveLevels = { match: null, bets: null };
+
+    function bindBulk(id, level) {
+        const btn = document.getElementById(id);
+        if (!btn) return;
+        // No toggles for this level on the page (e.g. no match has an open
+        // bet, so there are no bets strips to collapse) — wire() returned
+        // nothing, so there's nothing to drive.
+        if (!level) { btn.disabled = true; return; }
+        btn.addEventListener('click', () => level.setAll(!level.allCollapsed()));
+    }
+
+    function refreshBulkLabels() {
+        const matchBtn = document.getElementById('collapseAllMatches');
+        const betsBtn = document.getElementById('collapseAllBets');
+        if (matchBtn && liveLevels.match) {
+            matchBtn.textContent = liveLevels.match.allCollapsed() ? 'Expand all' : 'Collapse all';
+        }
+        if (betsBtn && liveLevels.bets) {
+            const matchesHidden = liveLevels.match ? liveLevels.match.allCollapsed() : false;
+            betsBtn.textContent = liveLevels.bets.allCollapsed() ? 'Expand bets' : 'Collapse bets';
+            betsBtn.disabled = matchesHidden;
+        }
     }
 
     wireLivePanel();
