@@ -1823,6 +1823,40 @@ def _launch_live_refresh(with_bookmaker=False):
     return proc
 
 
+def _live_panel_context():
+    """Context for `_live_football_panel.html`: the live snapshot enriched
+    with any OPEN bets on each match, plus the auto-cashout arm state.
+    Shared by the /live page and the /football/live_fragment swap endpoint
+    so both render the panel from an identical context."""
+    live_file = os.path.join(OUTPUT_DIR, "live_data.json")
+    live_matches = []
+    if os.path.exists(live_file):
+        try:
+            with open(live_file, 'r') as f:
+                live_matches = json.load(f)
+        except Exception:
+            pass
+    _attach_open_bets(live_matches)
+    return {
+        'live_matches': live_matches[:50],
+        'auto_cashout_armed': _auto_cashout_armed(),
+        'auto_cashout_shadow': _auto_cashout_shadow(),
+    }
+
+
+@football_bp.route('/live_fragment')
+def live_fragment():
+    """Render the live panel alone, for in-place swapping by the browser.
+
+    The panel used to be refreshed with `location.reload()`, which threw
+    away scroll position and all in-page state (collapse toggles, the
+    Auto-10m checkbox) on every 10-minute auto-refresh. The client now
+    fetches this and replaces `#livePanelBody`. The panel's <script> sits
+    OUTSIDE that wrapper, so a swap never re-inserts it — the client calls
+    `wireLivePanel()` to rebind the fresh nodes instead."""
+    return render_template('_live_football_panel.html', **_live_panel_context())
+
+
 @football_bp.route('/refresh_live', methods=['POST'])
 def refresh_live():
     """Kicks off `scripts/run_live_analysis.py` (Flashscore live scrape).
@@ -2939,23 +2973,12 @@ def live_tabbed():
         active_tab = 'football'
 
     # Football is the only sport with a live feed today. Same read + enrich
-    # path the football dashboard used before the panel was relocated here.
-    live_file = os.path.join(OUTPUT_DIR, "live_data.json")
-    live_matches = []
-    if os.path.exists(live_file):
-        try:
-            with open(live_file, 'r') as f:
-                live_matches = json.load(f)
-        except Exception:
-            pass
-    _attach_open_bets(live_matches)
-
+    # path the football dashboard used before the panel was relocated here,
+    # shared with /football/live_fragment so a swap matches a fresh load.
     return render_template(
         'live_tabbed.html',
         active_tab=active_tab,
-        live_matches=live_matches[:50],
-        auto_cashout_armed=_auto_cashout_armed(),
-        auto_cashout_shadow=_auto_cashout_shadow(),
+        **_live_panel_context(),
     )
 
 

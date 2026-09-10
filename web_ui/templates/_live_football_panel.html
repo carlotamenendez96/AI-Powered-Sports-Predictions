@@ -7,10 +7,17 @@
     - auto_cashout_armed: bool (server-side auto-cashout arm state)
 
   Self-contained: carries its own <script> (refresh / auto-10m / auto-cashout
-  / poll-and-reload), null-guarded so it works without the dashboard's
+  / poll-and-swap), null-guarded so it works without the dashboard's
   predict/verify elements present.
+
+  Markup lives in #livePanelBody; the script block is deliberately OUTSIDE it.
+  /football/live_fragment re-renders this template and the client swaps just
+  #livePanelBody's innerHTML, so the script is never duplicated or re-run —
+  wireLivePanel() rebinds the fresh nodes instead.
 #}
-<!-- Live Matches Section -->
+<!-- Live Matches Section. Everything inside #livePanelBody is replaced
+     wholesale by refreshLivePanel(); the script block sits outside it. -->
+<div id="livePanelBody">
 {% if live_matches %}
 <div class="card mb-4 border-danger">
     <div class="card-header bg-danger text-white d-flex justify-content-between align-items-center">
@@ -228,9 +235,13 @@
     </div>
 </div>
 {% endif %}
+</div><!-- /#livePanelBody -->
 
 <script>
-    // Self-contained live-panel script (moved off the football dashboard).
+    // Self-contained live-panel script. It is rendered OUTSIDE #livePanelBody
+    // and is never re-inserted by a swap, so everything that touches per-match
+    // DOM nodes must be (re)bound through wireLivePanel().
+    const LIVE_FRAGMENT_URL = "{{ url_for('football.live_fragment') }}";
     let liveTaskRunning = false;
 
     function triggerLive(event) {
@@ -255,8 +266,34 @@
             .catch(err => console.error(err));
     }
 
-    // Poll /status; reflect the live task state on the buttons and reload the
-    // page when (a) a scrape we observed running has completed, or (b) the
+    // Swap the panel in place instead of reloading the page. A full reload
+    // discarded scroll position and every bit of in-page state (collapse
+    // toggles, the Auto-10m checkbox) each time a 10-minute refresh landed.
+    // Falls back to location.reload() on any failure, so a broken swap can
+    // never leave a permanently stale panel on screen.
+    function refreshLivePanel() {
+        return fetch(LIVE_FRAGMENT_URL, { headers: { 'X-Requested-With': 'fetch' } })
+            .then(r => r.ok ? r.text() : Promise.reject(r.status))
+            .then(html => {
+                const current = document.getElementById('livePanelBody');
+                const next = new DOMParser()
+                    .parseFromString(html, 'text/html')
+                    .getElementById('livePanelBody');
+                if (!current || !next) { location.reload(); return; }
+                // Emptying the container shrinks the document for an instant,
+                // and the browser clamps scrollY to the shorter page before the
+                // new rows restore the height. Measured 99 -> 55 on a short
+                // slate, so capture and restore it around the swap.
+                const y = window.scrollY;
+                current.innerHTML = next.innerHTML;
+                wireLivePanel();
+                if (window.scrollY !== y) window.scrollTo(0, y);
+            })
+            .catch(() => { location.reload(); });
+    }
+
+    // Poll /status; reflect the live task state on the buttons and swap the
+    // panel when (a) a scrape we observed running has completed, or (b) the
     // server-side auto-cashout epoch bumps (a bet was just cashed).
     function updateLiveStatus() {
         fetch('/status')
@@ -278,7 +315,7 @@
                         }
                     } else if (lState === 'completed' && liveTaskRunning) {
                         liveTaskRunning = false;
-                        location.reload();
+                        refreshLivePanel();
                     } else {
                         liveTaskRunning = false;
                         const refreshBtn = document.getElementById('refreshLiveBtn');
@@ -295,14 +332,14 @@
                 }
 
                 // Auto-cashout: the server-side sweep cashes a bet AFTER its
-                // scrape completes, so the scrape-completion reload above fires
-                // too early to show it. Reload again when the cashout epoch bumps.
+                // scrape completes, so the scrape-completion swap above fires
+                // too early to show it. Swap again when the cashout epoch bumps.
                 if (typeof data.auto_cashout_epoch === 'number') {
                     if (window.__cashoutEpoch === undefined) {
                         window.__cashoutEpoch = data.auto_cashout_epoch;
                     } else if (data.auto_cashout_epoch > window.__cashoutEpoch) {
                         window.__cashoutEpoch = data.auto_cashout_epoch;
-                        location.reload();
+                        refreshLivePanel();
                     }
                 }
             })
@@ -312,35 +349,52 @@
     setInterval(updateLiveStatus, 2000);
     updateLiveStatus();
 
+    // Auto-10m timer state lives out here, NOT inside wireLivePanel: a swap
+    // must rebind the checkbox without ever starting a second interval.
+    const LIVE_AUTO_KEY = 'liveAutoRefresh';
+    const LIVE_AUTO_INTERVAL_MS = 10 * 60 * 1000;
+    let liveAutoTimer = null;
+
+    function liveAutoTick() {
+        if (document.visibilityState !== 'visible') return;
+        fetch('/status').then(r => r.json()).then(s => {
+            if (s.live && s.live.state === 'running') return;
+            fetch('/football/refresh_live', { method: 'POST' });
+        }).catch(() => { /* network blip: skip this tick */ });
+    }
+    function liveAutoStart() {
+        if (!liveAutoTimer) liveAutoTimer = setInterval(liveAutoTick, LIVE_AUTO_INTERVAL_MS);
+    }
+    function liveAutoStop() {
+        if (liveAutoTimer) { clearInterval(liveAutoTimer); liveAutoTimer = null; }
+    }
+
+    // Bind everything that lives inside #livePanelBody. Safe to call
+    // repeatedly: a swap replaces those nodes outright, so their listeners go
+    // with them and nothing accumulates.
+    function wireLivePanel() {
+        wireLiveCheckboxes();
+        wireLiveCollapse();
+    }
+
     // "Auto 10m" = browser-driven UI refresh (Flashscore-only), persisted in
     // localStorage, paused while the tab is hidden. "Auto-cashout" is
     // DIFFERENT: it arms a SERVER-SIDE loop that refreshes + cashes out every
     // 10 min independently of any browser tab (the checkbox just toggles that
     // server state via /auto_cashout/arm; its checked-state is rendered from
-    // the server, not localStorage).
-    (function () {
+    // the server, so a swap restores it for free — Auto-10m is the one that
+    // has to be re-read from localStorage below).
+    function wireLiveCheckboxes() {
         const cb = document.getElementById('autoRefreshLive');
         const cbCash = document.getElementById('autoCashout');
-        const KEY = 'liveAutoRefresh';
-        const INTERVAL_MS = 10 * 60 * 1000;
-        let timer = null;
-
-        function tick() {
-            if (document.visibilityState !== 'visible') return;
-            fetch('/status').then(r => r.json()).then(s => {
-                if (s.live && s.live.state === 'running') return;
-                fetch('/football/refresh_live', { method: 'POST' });
-            }).catch(() => { /* network blip: skip this tick */ });
-        }
-        function start() { if (!timer) timer = setInterval(tick, INTERVAL_MS); }
-        function stop() { if (timer) { clearInterval(timer); timer = null; } }
+        const cbShadow = document.getElementById('autoCashoutShadow');
 
         if (cb) {
-            cb.checked = localStorage.getItem(KEY) === '1';
-            if (cb.checked) start();
+            cb.checked = localStorage.getItem(LIVE_AUTO_KEY) === '1';
+            cb.checked ? liveAutoStart() : liveAutoStop();
             cb.addEventListener('change', () => {
-                localStorage.setItem(KEY, cb.checked ? '1' : '0');
-                cb.checked ? start() : stop();
+                localStorage.setItem(LIVE_AUTO_KEY, cb.checked ? '1' : '0');
+                cb.checked ? liveAutoStart() : liveAutoStop();
             });
         }
 
@@ -348,7 +402,6 @@
         // field it isn't sent. Never echo back both — a tab rendered before the
         // other setting changed would silently overwrite it, and in the shadow
         // case that means re-enabling real firing behind the user's back.
-        const cbShadow = document.getElementById('autoCashoutShadow');
         function postArm(field, value, revert) {
             const body = new URLSearchParams({ [field]: value ? '1' : '0' });
             fetch('/football/auto_cashout/arm', { method: 'POST', body })
@@ -364,18 +417,18 @@
                 postArm('shadow', cbShadow.checked, () => { cbShadow.checked = !cbShadow.checked; });
             });
         }
-    })();
+    }
 
-    // Two levels of collapse, both persisted in localStorage. This panel
-    // reloads on its own (Auto 10m, scrape completion, auto-cashout epoch), so
-    // a collapse that didn't survive a reload would be useless. State is keyed
-    // by match_id (match name as fallback).
+    // Two levels of collapse, both persisted in localStorage — which is also
+    // what carries them across a swap, since the fresh markup always arrives
+    // at its default state and this re-applies the user's choice.
     //   .live-toggle       -> hides stats + markets + the whole open-bets block
     //                         (default OPEN)
     //   .live-bets-toggle  -> hides just the open-bets rows, keeping the header
     //                         (default CLOSED — the markup ships collapsed, so
     //                         there's no flash before this runs)
-    (function () {
+    // State is keyed by match_id (match name as fallback).
+    function wireLiveCollapse() {
         function wire(storageKey, toggleSel, detailSel, caretSel, defaultCollapsed) {
             const toggles = document.querySelectorAll(toggleSel);
             if (!toggles.length) return;
@@ -395,15 +448,15 @@
                 catch (e) { /* private mode / quota: state stays per-tab */ }
             }
 
-            function apply(key, isCollapsed) {
+            function apply(key, collapsedNow) {
                 const sel = '[data-live-key="' + CSS.escape(key) + '"]';
                 document.querySelectorAll(detailSel + sel).forEach(el => {
-                    el.classList.toggle('d-none', isCollapsed);
+                    el.classList.toggle('d-none', collapsedNow);
                 });
                 document.querySelectorAll(toggleSel + sel).forEach(btn => {
-                    btn.setAttribute('aria-expanded', isCollapsed ? 'false' : 'true');
+                    btn.setAttribute('aria-expanded', collapsedNow ? 'false' : 'true');
                     const caret = caretSel ? btn.querySelector(caretSel) : btn;
-                    if (caret) caret.textContent = isCollapsed ? '\u25B8' : '\u25BE';
+                    if (caret) caret.textContent = collapsedNow ? '▸' : '▾';
                 });
             }
 
@@ -427,8 +480,10 @@
         }
 
         wire('liveCollapsed', '.live-toggle', '.live-detail', null, false);
-        // New storage key: the old one stored collapsed-keys, which under the
-        // default-closed semantics would read as "expand these".
+        // Storage key differs from the match level: it stores expanded-keys,
+        // since the default here is closed.
         wire('liveBetsExpanded', '.live-bets-toggle', '.live-bets-detail', '.live-bets-caret', true);
-    })();
+    }
+
+    wireLivePanel();
 </script>
