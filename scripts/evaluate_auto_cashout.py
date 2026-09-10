@@ -69,6 +69,80 @@ def _load_verifications():
     return idx
 
 
+def _load_lane_bets():
+    """{bet_id: [{lane, stake, odds, cashout_amount}, ...]} from every slip.
+
+    The audit log records ONE representative bet per bet_id, but a cashout
+    cascades across every lane holding that same wager. So the per-lane
+    bankroll impact can't be read off the log — it has to be recovered from
+    the slips, where each lane's own stake and realized amount live.
+    """
+    idx = {}
+    files = (glob.glob(os.path.join(OUTPUT_DIR, 'bets_*.json')) +
+             glob.glob(os.path.join(OUTPUT_DIR, 'history', 'bets_*.json')))
+    for f in files:
+        try:
+            with open(f) as fh:
+                slip = json.load(fh)
+        except (OSError, json.JSONDecodeError):
+            continue
+        for b in slip.get('bets', []):
+            bid = b.get('bet_id')
+            if not bid:
+                continue
+            amt = b.get('cashout_amount')
+            idx.setdefault(bid, []).append({
+                'lane': b.get('lane', 'value'),
+                'stake': float(b.get('stake_units', b.get('stake', 0)) or 0),
+                'odds': float(b.get('odds', b.get('odd', 0)) or 0),
+                'cashout_amount': None if amt is None else float(amt),
+            })
+    return idx
+
+
+def _lane_impact(scored, lane_bets):
+    """Per-lane bankroll delta for these cashouts.
+
+    Where a lane actually cashed out, use its RECORDED `cashout_amount` —
+    that is ground truth. Only fall back to scaling the representative's
+    amount by the lane's share of stake when no amount was recorded (i.e.
+    the shadow counterfactual, where nothing fired).
+
+    The fallback is exact for shadow because a cascade prices every lane at
+    one instant off the same adj_prob, and the price is linear in stake. It
+    is NOT valid for historical executed cashouts: lanes there were cashed
+    at different times (pre-cascade), so their ratios genuinely differ.
+    """
+    per = {}
+    for x in scored:
+        rows = lane_bets.get(x.get('bet_id')) or []
+        rep_stake = float(x.get('stake') or 0)
+        if not rows or rep_stake <= 0:
+            continue
+        for r in rows:
+            stake = r['stake']
+            odds = r['odds'] or float(x.get('odds') or 0)
+            if r['cashout_amount'] is not None:
+                cash = r['cashout_amount']
+                basis = 'recorded'
+            else:
+                cash = float(x['cash_return']) * (stake / rep_stake)
+                basis = 'scaled'
+            held = stake * odds if x['won'] else 0.0
+            d = per.setdefault(r['lane'], {'n': 0, 'stake': 0.0, 'cash': 0.0,
+                                           'held': 0.0, 'recorded': 0, 'scaled': 0})
+            d['n'] += 1
+            d['stake'] += stake
+            d['cash'] += cash
+            d['held'] += held
+            d[basis] += 1
+    for d in per.values():
+        d['delta'] = round(d['cash'] - d['held'], 2)
+        for k in ('stake', 'cash', 'held'):
+            d[k] = round(d[k], 2)
+    return per
+
+
 def _selection_won(bet_type, selection, row):
     """Did this selection win, per the verification row? Returns
     True/False, or None if the row can't decide (missing column)."""
@@ -175,14 +249,20 @@ def main():
     scored, pending = score(fired, 'executed')
     shadow_scored, shadow_pending = score(shadowed, 'shadow')
 
+    lane_bets = _load_lane_bets()
+    lane_exec = _lane_impact(scored, lane_bets)
+    lane_shadow = _lane_impact(shadow_scored, lane_bets)
+
     report = {
         'cashouts_executed': len(fired), 'scored': len(scored),
         'pending_settlement': len(pending),
         **summarize(scored),
+        'lane_impact_executed': lane_exec,
         'shadow': {
             'would_fire': len(shadowed), 'scored': len(shadow_scored),
             'pending_settlement': len(shadow_pending),
             **summarize(shadow_scored),
+            'lane_impact': lane_shadow,
         },
         'caveat': 'cash_return is the SYNTHETIC estimate (no real haircut) → Σcash optimistic.',
     }
@@ -245,6 +325,26 @@ def main():
                   f"Σ(real − synthetic) = €{d_sum:+.2f}")
             print("  (negative ⇒ the real offer pays LESS than our fair-value estimate, "
                   "so the synthetic numbers above are optimistic)")
+
+    def _print_lane_impact(per, title, note):
+        if not per:
+            return
+        print(f"\n{title}")
+        print("  lane        bets    staked    would-cash    if held      Δ bankroll")
+        for lane in sorted(per, key=lambda l: per[l]['delta']):
+            d = per[lane]
+            print(f"  {lane:<10} {d['n']:>5}  €{d['stake']:>8.2f}  €{d['cash']:>10.2f}  "
+                  f"€{d['held']:>8.2f}   €{d['delta']:>+8.2f}")
+        print(f"  {note}")
+
+    _print_lane_impact(
+        lane_shadow,
+        "=== Per-lane bankroll impact HAD live cashout been ON (shadow) ===",
+        "Δ is how each lane's bankroll would have moved vs holding to settlement.")
+    _print_lane_impact(
+        lane_exec,
+        "=== Per-lane bankroll impact of cashouts that ACTUALLY fired ===",
+        "This money already moved — shown for comparison with the shadow rows.")
 
     if pending or shadow_pending:
         print(f"\n  {len(pending)} executed + {len(shadow_pending)} shadow cashout(s) await "

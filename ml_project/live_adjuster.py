@@ -48,7 +48,8 @@ class LiveAdjuster:
         # late game = trust the score state. Crossover at ~30 minutes.
         self.OU_PACE_CROSSOVER_MIN = 30
 
-    def adjust_ou_probabilities(self, pre_ou_probs, live_stats, minute, current_score):
+    def adjust_ou_probabilities(self, pre_ou_probs, live_stats, minute, current_score,
+                                trace=None):
         """Adjust Over/Under 2.5 probabilities based on score state + xG pace.
 
         Args:
@@ -56,21 +57,31 @@ class LiveAdjuster:
             live_stats (dict): xg_home, xg_away as observed so far.
             minute (int): 0-90+.
             current_score (str): "1-0", etc.
+            trace (dict|None): if given, populated with the intermediate
+                quantities behind the result (pace, blend weight, branch
+                taken) so a stored snapshot can be audited after the fact.
 
         Returns:
             dict: {'over': p, 'under': 1-p} adjusted.
         """
+        def _t(**kw):
+            if trace is not None:
+                trace.update(kw)
+
         try:
             h, a = map(int, current_score.split('-'))
         except (ValueError, AttributeError):
+            _t(branch='unparseable_score')
             return dict(pre_ou_probs)
 
         current_goals = h + a
         # Already past threshold → Over is locked in.
         if current_goals >= 3:
+            _t(branch='over_locked', current_goals=current_goals)
             return {'over': 0.99, 'under': 0.01}
         # No time left to score → Under is locked in.
         if minute >= 90:
+            _t(branch='under_locked', current_goals=current_goals)
             return {'over': 0.01, 'under': 0.99}
 
         # Estimate remaining goals from observed xG pace.
@@ -99,9 +110,14 @@ class LiveAdjuster:
 
         # Clamp to keep callers safe.
         p_over = max(0.01, min(0.99, p_over))
+        _t(branch='pace_blend', current_goals=current_goals,
+           xg_so_far=round(xg_so_far, 3), remaining_xg=round(remaining_xg, 3),
+           need=need, p_over_pace=round(p_over_pace, 4),
+           pace_weight=round(pace_weight, 4), pre_over=round(pre_over, 4))
         return {'over': p_over, 'under': 1.0 - p_over}
         
-    def adjust_probabilities(self, pre_probs, live_stats, minute, current_score):
+    def adjust_probabilities(self, pre_probs, live_stats, minute, current_score,
+                             trace=None):
         """
         Adjusts probabilities.
         
@@ -115,35 +131,56 @@ class LiveAdjuster:
             minute (int): Current minute (0-90+)
             current_score (str): "1-0", "0-0", etc.
             
+            trace (dict|None): if given, populated with the dominance score and
+                the probability vector after each stage, so a stored snapshot
+                shows WHICH stage moved the number and by how much. Without it
+                the per-stage contributions are unrecoverable after the fact.
+
         Returns:
             dict: Adjusted probabilities {'home': ..., 'draw': ..., 'away': ...}
         """
-        
+        def _stage(name, probs):
+            if trace is not None:
+                trace.setdefault('stages', []).append(
+                    {'stage': name, 'probs': {k: round(v, 4) for k, v in probs.items()}})
+
         # Parse Score
         try:
             h_score, a_score = map(int, current_score.split('-'))
         except:
+            if trace is not None:
+                trace['branch'] = 'unparseable_score'
             return pre_probs # Fail safe
-            
+
         # 1. Calculate Dominance Score (Positive = Home Dominance, Negative = Away)
         dominance = self._calculate_dominance(live_stats)
-        
+        if trace is not None:
+            trace['branch'] = 'adjusted'
+            trace['dominance'] = round(dominance, 4)
+        _stage('pre', pre_probs)
+
         # 2. Base Adjustment on Game State (Time Decay)
         # As time passes, the probability of the CURRENT outcome increases.
         adjusted_probs = self._apply_time_decay(pre_probs, h_score, a_score, minute)
-        
+        _stage('time_decay', adjusted_probs)
+
         # 3. Apply Dominance Modifier
         adjusted_probs = self._apply_dominance_modifier(adjusted_probs, dominance, h_score, a_score, minute)
+        _stage('dominance', adjusted_probs)
 
         # 4. Apply Sterile Possession Penalty
         adjusted_probs = self._apply_sterile_possession(adjusted_probs, live_stats, minute)
+        _stage('sterile_possession', adjusted_probs)
 
         # 5. Apply Red-Card Modifier (man-advantage going forward)
         adjusted_probs = self._apply_red_card_modifier(adjusted_probs, live_stats, minute)
+        _stage('red_card', adjusted_probs)
 
         # Normalize
         total = sum(adjusted_probs.values())
         if total <= 0:
+            if trace is not None:
+                trace['branch'] = 'all_zero_failsafe'
             return pre_probs  # fail safe — never return all-zeros
         return {k: v/total for k, v in adjusted_probs.items()}
 

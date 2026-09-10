@@ -299,18 +299,26 @@ def main():
         except (KeyError, ValueError, TypeError):
             pre_ou_probs = {'over': 0.5, 'under': 0.5}
 
+        # Traces record WHICH adjustment stage moved each probability and by
+        # how much. They're persisted to live_history (not surfaced in the UI
+        # record) — without them a stored snapshot shows only the before/after
+        # and the per-stage contributions can't be recovered later.
+        trace_1x2, trace_ou = {}, {}
+
         adjusted = adjuster.adjust_probabilities(
             pre_probs,
             item.get('stats', {}),
             item.get('minute', 0),
-            item.get('score', '0-0')
+            item.get('score', '0-0'),
+            trace=trace_1x2
         )
 
         adjusted_ou = adjuster.adjust_ou_probabilities(
             pre_ou_probs,
             item.get('stats', {}),
             item.get('minute', 0),
-            item.get('score', '0-0')
+            item.get('score', '0-0'),
+            trace=trace_ou
         )
 
         record = {
@@ -345,6 +353,13 @@ def main():
             'adj_probs': adjusted,
             'pre_ou_probs': pre_ou_probs,
             'adj_ou_probs': adjusted_ou,
+            # Per-stage attribution for the two adjustments above.
+            'trace_1x2': trace_1x2,
+            'trace_ou': trace_ou,
+            # Marks snapshots whose priors were synthesized from open-bet odds
+            # rather than a real prediction row — lower-quality records that
+            # later analysis must be able to separate out.
+            'priors_synthesized': bool(pred_row.get('_synthesized', False)),
         })
 
     if history_lines:
