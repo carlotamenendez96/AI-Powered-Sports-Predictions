@@ -45,6 +45,13 @@ PYTHONPATH="$(pwd):$(pwd)/ml_project" python3 scripts/run_backtest.py \
   --rules null,lock_in_profit,stop_loss,late_drift,momentum_fade
 ```
 
+**Automated (2026-09-10) — triggered by data, not by cadence.** `bin/run_verification.sh` now ends with two non-fatal steps:
+
+- `scripts/check_live_collection.py` — per-day matches-with-bets vs matches-actually-snapshotted, plus current armed/shadow/server state. Silent collection death is this system's demonstrated failure mode (the 06-14 → 09-09 outage ran **13 straight days with 14–48 bet-on matches/day and zero snapshots**, and nothing reported it), and this is the check that would have caught it on day one. Today's row is scored "in progress" and staleness is suppressed while the live window is closed, so it doesn't cry wolf.
+- `scripts/check_backtest_due.py --run` — re-runs the backtest when **+50 new bound trajectories** have accrued since the last run, stamped in `output/backtests/.last_run.json`. *Not* an elapsed-days trigger: collection ran on 13 of 115 calendar days (11.3% uptime), so a "every N days" rule would have fired ~12 times through the outage emitting identical reports off frozen input. The auto-run is `--data real` deliberately — an unattended report that silently mixed in the sign-inverted synthetic arm is worse than no report.
+
+Counting lives in `ml_project/backtest/coverage.py`, which `run_backtest.py` now binds with too, so the trigger cannot drift from what the harness would actually score (verified: `count_bound()` = 69 = the harness's `real=69`).
+
 **Δ stability tracking**: a rule's directional sign should stay constant across weekly runs; a >50% magnitude shift OR sign flip is a "synthetic trajectories are misleading" signal — wait for more real `live_history_*.jsonl` data before tuning thresholds on it.
 
 | Run date | Sample | `late_drift/value` | `stop_loss/value` | `lock_in_profit/value` |

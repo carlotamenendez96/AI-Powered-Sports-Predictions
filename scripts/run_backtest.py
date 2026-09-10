@@ -23,7 +23,6 @@ import os
 import statistics
 import sys
 
-import pandas as pd
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
@@ -38,60 +37,11 @@ from ml_project.backtest.simulator import (
 from ml_project.backtest.trajectories import (
     RealTrajectory, SyntheticTrajectory,
 )
+from ml_project.backtest.coverage import (
+    load_pred_row, load_verif_row, slips_in_range,
+)
 
 OUTPUT_DIR = os.path.join(PROJECT_ROOT, 'output')
-
-
-def slips_in_range(start: str, end: str):
-    """Yield (path, slip_dict) for every bets_*.json in [start, end]."""
-    seen = set()
-    for d in (OUTPUT_DIR, os.path.join(OUTPUT_DIR, 'history')):
-        for f in glob.glob(os.path.join(d, 'bets_*.json')):
-            base = os.path.basename(f)
-            if base in seen:
-                continue
-            seen.add(base)
-            try:
-                with open(f) as fh:
-                    slip = json.load(fh)
-            except (OSError, json.JSONDecodeError):
-                continue
-            date = slip.get('date', '')
-            if start <= date <= end:
-                yield f, slip
-
-
-def _resolve_artifact(name: str):
-    """Locate an output artifact, falling back to the soft-delete archive.
-
-    `/football/delete_file` moves artifacts to `output/history/`, so any date
-    old enough to have been archived would otherwise look like missing data --
-    which silently zeroed the real-trajectory arm of this backtest, since
-    live_history only covers those older dates. Mirrors `slips_in_range`.
-    """
-    for d in (OUTPUT_DIR, os.path.join(OUTPUT_DIR, 'history')):
-        p = os.path.join(d, name)
-        if os.path.exists(p):
-            return p
-    return None
-
-
-def load_pred_row(date: str, home: str, away: str):
-    p = _resolve_artifact(f'predictions_{date}.csv')
-    if p is None:
-        return None
-    df = pd.read_csv(p)
-    m = df[(df['Home Team'] == home) & (df['Away Team'] == away)]
-    return m.iloc[0] if not m.empty else None
-
-
-def load_verif_row(date: str, home: str, away: str):
-    p = _resolve_artifact(f'verification_{date}.csv')
-    if p is None:
-        return None
-    df = pd.read_csv(p)
-    m = df[(df['Home'] == home) & (df['Away'] == away)]
-    return m.iloc[0] if not m.empty else None
 
 
 def build_trajectories(args, date: str, match_id: str, hg: int, ag: int):

@@ -110,6 +110,19 @@ else
     python3 ml_project/resolve_daily_bets.py --bets_dir output --results $RESULTS_JSON
 fi
 
+# 7. Collection health + backtest trigger. Both are reports and must never
+#    break this pipeline, hence `|| true`. Settlement above is what turns a
+#    stored trajectory into a scoreable one, so this is the right moment to
+#    ask whether enough has accrued for a backtest re-run -- the trigger is
+#    new bound trajectories, not elapsed days (see check_backtest_due.py).
+echo ""
+echo "[*] Live collection health..."
+python3 scripts/check_live_collection.py --days 14 || true
+
+echo ""
+echo "[*] Cashout backtest trigger..."
+python3 scripts/check_backtest_due.py --run || true
+
 echo ""
 echo "========================================"
 echo "           Verification Finished        "
