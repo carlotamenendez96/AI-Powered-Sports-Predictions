@@ -61,9 +61,24 @@ def slips_in_range(start: str, end: str):
                 yield f, slip
 
 
+def _resolve_artifact(name: str):
+    """Locate an output artifact, falling back to the soft-delete archive.
+
+    `/football/delete_file` moves artifacts to `output/history/`, so any date
+    old enough to have been archived would otherwise look like missing data --
+    which silently zeroed the real-trajectory arm of this backtest, since
+    live_history only covers those older dates. Mirrors `slips_in_range`.
+    """
+    for d in (OUTPUT_DIR, os.path.join(OUTPUT_DIR, 'history')):
+        p = os.path.join(d, name)
+        if os.path.exists(p):
+            return p
+    return None
+
+
 def load_pred_row(date: str, home: str, away: str):
-    p = os.path.join(OUTPUT_DIR, f'predictions_{date}.csv')
-    if not os.path.exists(p):
+    p = _resolve_artifact(f'predictions_{date}.csv')
+    if p is None:
         return None
     df = pd.read_csv(p)
     m = df[(df['Home Team'] == home) & (df['Away Team'] == away)]
@@ -71,8 +86,8 @@ def load_pred_row(date: str, home: str, away: str):
 
 
 def load_verif_row(date: str, home: str, away: str):
-    p = os.path.join(OUTPUT_DIR, f'verification_{date}.csv')
-    if not os.path.exists(p):
+    p = _resolve_artifact(f'verification_{date}.csv')
+    if p is None:
         return None
     df = pd.read_csv(p)
     m = df[(df['Home'] == home) & (df['Away'] == away)]
@@ -135,7 +150,7 @@ def main():
                     help='Start date (inclusive, YYYY-MM-DD). Default: 30 days ago.')
     ap.add_argument('--end', default=datetime.date.today().isoformat(),
                     help='End date (inclusive, YYYY-MM-DD). Default: today.')
-    ap.add_argument('--rules', default='null,lock_in_profit,stop_loss,late_drift',
+    ap.add_argument('--rules', default='null,lock_in_profit,stop_loss,late_drift,momentum_fade',
                     help='Comma-separated rule names. Available: ' + ', '.join(RULES))
     ap.add_argument('--lanes', default='value,conviction,model',
                     help='Comma-separated lanes to include.')
