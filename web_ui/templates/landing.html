@@ -201,7 +201,7 @@
                                 {{ '%+.2f'|format(m.delta) }}
                             </td>
                             <td class="text-end">{{ m.bets }}</td>
-                            <td class="text-end">{{ (m.trigger_rate * 100)|round(0)|int }}%</td>
+                            <td class="text-end">{{ '%.1f'|format(m.trigger_rate) }}%</td>
                         </tr>
                         {% endfor %}
                     </tbody>
