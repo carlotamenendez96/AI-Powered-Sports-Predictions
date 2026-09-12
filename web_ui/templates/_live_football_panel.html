@@ -23,14 +23,10 @@
     <div class="card-header bg-danger text-white d-flex justify-content-between align-items-center">
         <div class="d-flex align-items-center gap-2">
             <span>⚡ Live Match Analysis &amp; Adjustments</span>
-            {# Bulk collapse. Labels are rewritten by refreshBulkLabels() to
-               match what a press would actually do. #}
-            <div class="btn-group btn-group-sm" role="group">
-                <button type="button" class="btn btn-outline-light" id="collapseAllMatches"
-                        title="Collapse or expand every match on the slate">Collapse all</button>
-                <button type="button" class="btn btn-outline-light" id="collapseAllBets"
-                        title="Collapse or expand the open-bets strip on every match">Collapse bets</button>
-            </div>
+            {# Bulk collapse of the open-bets strips. The label is rewritten by
+               refreshBulkLabels() to match what a press would actually do. #}
+            <button type="button" class="btn btn-sm btn-outline-light" id="collapseAllBets"
+                    title="Collapse or expand the open-bets strip on every match">Collapse bets</button>
             {# Bet-less live matches are only actionable if we ever place bets
                IN-PLAY (no pre-match bet needed to bet live). Until then the
                panel's job is watching pre-match bets to judge live / cashout
@@ -89,7 +85,7 @@
                yellow left border + a 💰 badge — so the user can see at
                a glance which live games have their money on them. #}
             {% set _has_bet = item.open_bets and item.open_bets|length > 0 %}
-            {# Stable-ish per-match key for the collapse state (localStorage). #}
+            {# Stable-ish per-match key for the open-bets collapse state (localStorage). #}
             {% set _key = item.match_id or item.match %}
             <div class="col-12 mb-2 live-match-col" data-has-bet="{{ 1 if _has_bet else 0 }}">
                 <div class="card {{ 'border-warning border-2' if _has_bet else 'border-secondary' }}">
@@ -103,11 +99,8 @@
                             {% set _home_score = _scores[0]|trim if _scores|length == 2 else '0' %}
                             {% set _away_score = _scores[1]|trim if _scores|length == 2 else '0' %}
                             <div class="col-md-3">
+                                {% if _has_bet or item.priors_synthesized %}
                                 <div class="d-flex align-items-center gap-1 mb-1">
-                                    <button type="button"
-                                            class="btn btn-sm btn-outline-secondary py-0 px-1 lh-1 live-toggle"
-                                            data-live-key="{{ _key }}" aria-expanded="true"
-                                            title="Collapse / expand this match's stats and markets">&#9662;</button>
                                     {% if _has_bet %}
                                     <span class="badge bg-warning text-dark"
                                           title="You have {{ item.open_bets|length }} open bet(s) on this match.">
@@ -121,13 +114,14 @@
                                     </span>
                                     {% endif %}
                                 </div>
+                                {% endif %}
                                 <div class="fs-6 fw-bold">{{ _home_team }}<span class="ms-3">{{ _home_score }}</span>{% if item.stats.get('red_cards_home', 0) %} <span class="red-card-box ms-1" title="Red card(s) — factored into the live prediction">{{ item.stats.get('red_cards_home')|int }}</span>{% endif %}</div>
                                 <div class="fs-6 fw-bold">{{ _away_team }}<span class="ms-3">{{ _away_score }}</span>{% if item.stats.get('red_cards_away', 0) %} <span class="red-card-box ms-1" title="Red card(s) — factored into the live prediction">{{ item.stats.get('red_cards_away')|int }}</span>{% endif %}</div>
                                 <div class="small text-muted mt-1">{{ item.minute }}'</div>
                             </div>
 
                             <!-- Stats (xG/xGOT capture shot quality; Poss + Tch capture territory) -->
-                            <div class="col-md-4 live-detail" data-live-key="{{ _key }}">
+                            <div class="col-md-4">
                                 <table class="table table-sm mb-0 small">
                                     <thead class="table-light">
                                         <tr>
@@ -158,7 +152,7 @@
                             </div>
 
                             <!-- Pre vs Live adjustment (1X2 + O/U markets) -->
-                            <div class="col-md-5 live-detail" data-live-key="{{ _key }}">
+                            <div class="col-md-5">
                                 {% set _ou_pre  = item.pre_ou_probs or {'over': 0, 'under': 0} %}
                                 {% set _ou_live = item.adj_ou_probs or _ou_pre %}
                                 <table class="table table-bordered table-sm text-center small mb-0 markets-table">
@@ -208,7 +202,7 @@
                         <!-- Open bets on this match — full-width compact strip
                              below the stats, one bet per line (Phase 6 + 7). -->
                         {% if item.open_bets and item.open_bets|length > 0 %}
-                        <div class="mt-2 pt-2 border-top live-detail" data-live-key="{{ _key }}">
+                        <div class="mt-2 pt-2 border-top">
                             <button type="button"
                                     class="btn btn-link btn-sm p-0 mb-1 small text-muted text-decoration-none live-bets-toggle"
                                     data-live-key="{{ _key }}" aria-expanded="true"
@@ -444,16 +438,18 @@
         }
     }
 
-    // Two levels of collapse, both persisted in localStorage — which is also
-    // what carries them across a swap, since the fresh markup always arrives
+    // One level of collapse: .live-bets-toggle hides the open-bets rows while
+    // keeping the "Open bets (N)" header. Persisted in localStorage — which is
+    // also what carries it across a swap, since the fresh markup always arrives
     // at its default state and this re-applies the user's choice.
-    //   .live-toggle       -> hides stats + markets + the whole open-bets block
-    //   .live-bets-toggle  -> hides just the open-bets rows, keeping the header
-    // Both default OPEN, so both store collapsed-keys. wire() still takes the
+    // It defaults OPEN, so storage holds collapsed-keys. wire() still takes the
     // defaultCollapsed flag: it's what makes the stored set unambiguous, and a
     // default-closed level would otherwise be indistinguishable from one whose
     // keys are simply absent from storage.
     // State is keyed by match_id (match name as fallback).
+    // There used to be a second, match-level collapse (.live-toggle) over the
+    // stats/markets columns; dropped as redundant — with the stats worth seeing
+    // anyway, all it took away was the "Open bets (N)" line this toggle owns.
     function wireLiveCollapse() {
         function wire(storageKey, toggleSel, detailSel, caretSel, defaultCollapsed) {
             const toggles = document.querySelectorAll(toggleSel);
@@ -519,23 +515,19 @@
             };
         }
 
-        liveLevels.match = wire('liveCollapsed', '.live-toggle', '.live-detail', null, false);
         // Back off 'liveBetsExpanded': that key stored EXPANDED keys for the
         // default-closed variant, which under default-open semantics would read
         // exactly backwards — as "collapse these".
         liveLevels.bets = wire('liveBetsCollapsed', '.live-bets-toggle', '.live-bets-detail', '.live-bets-caret', false);
 
-        bindBulk('collapseAllMatches', liveLevels.match);
         bindBulk('collapseAllBets', liveLevels.bets);
         refreshBulkLabels();
     }
 
-    // Header bulk buttons. Each press does whatever the label says: collapse
-    // everything unless everything is already collapsed, in which case expand.
-    // Collapsing all matches also hides the bets strips (they're nested), so
-    // the bets button is disabled while that's the case — it would be a no-op
-    // the user couldn't see.
-    const liveLevels = { match: null, bets: null };
+    // Header bulk button ("Collapse bets"). Each press does whatever the label
+    // says: collapse every bets strip unless they're all already collapsed, in
+    // which case expand.
+    const liveLevels = { bets: null };
 
     function bindBulk(id, level) {
         const btn = document.getElementById(id);
@@ -548,15 +540,9 @@
     }
 
     function refreshBulkLabels() {
-        const matchBtn = document.getElementById('collapseAllMatches');
         const betsBtn = document.getElementById('collapseAllBets');
-        if (matchBtn && liveLevels.match) {
-            matchBtn.textContent = liveLevels.match.allCollapsed() ? 'Expand all' : 'Collapse all';
-        }
         if (betsBtn && liveLevels.bets) {
-            const matchesHidden = liveLevels.match ? liveLevels.match.allCollapsed() : false;
             betsBtn.textContent = liveLevels.bets.allCollapsed() ? 'Expand bets' : 'Collapse bets';
-            betsBtn.disabled = matchesHidden;
         }
     }
 
