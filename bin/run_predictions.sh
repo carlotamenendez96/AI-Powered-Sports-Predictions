@@ -89,6 +89,12 @@ else
     if ! python3 -c "import json; json.load(open('$OUTPUT_JSON'))" > /dev/null 2>&1; then
         echo "[!] Output file exists but contains corrupt JSON. Forcing re-scrape."
         NEED_SCRAPE=true
+    # An empty `[]` is 4 bytes on disk, so it passes both the -s and the
+    # json.load checks above and would silently short-circuit the scraper into
+    # reusing a failed run's output forever. Treat it as no cache at all.
+    elif [ "$(python3 -c "import json; print(len(json.load(open('$OUTPUT_JSON'))))" 2>/dev/null)" == "0" ]; then
+        echo "[!] Output file exists but holds 0 matches (failed prior scrape). Forcing re-scrape."
+        NEED_SCRAPE=true
     else
         echo "[*] valid Output file found. Skipping Scraper."
     fi
@@ -102,17 +108,36 @@ if [ "$NEED_SCRAPE" == "true" ]; then
 
     # Pass day_diff
     scrapy crawl flashscore -O $OUTPUT_JSON -L WARNING -a filter_leagues=true -a day_diff=$DAY_DIFF
+    # Capture immediately: any intervening command (even `date`) clobbers $?.
+    SCRAPY_RC=$?
 
     end_ts=$(date +%s)
     end_date=$(date "+%Y-%m-%d %H:%M:%S")
     duration=$((end_ts - start_ts))
 
-    if [ $? -eq 0 ]; then
-        echo "[+] Scraper Finished. Data saved to $OUTPUT_JSON"
-        echo "[$end_date] Status: Success | Start: $start_date | End: $end_date | Duration: ${duration}s" >> logs/scraper_status.log
+    # Scrapy exits 0 even when every request errored out (e.g. Playwright's
+    # browser binary is missing after a version bump), leaving a well-formed
+    # but EMPTY `[]` on disk. So the exit code alone is not enough — count the
+    # scraped matches and treat an empty slate as a failure. A genuinely empty
+    # day is rare and re-runnable; a silent 0 is what hides a broken scraper.
+    SCRAPED_COUNT=$(python3 -c "import json; print(len(json.load(open('$OUTPUT_JSON'))))" 2>/dev/null || echo "-1")
+
+    if [ "$SCRAPY_RC" -eq 0 ] && [ "$SCRAPED_COUNT" -gt 0 ]; then
+        echo "[+] Scraper Finished. $SCRAPED_COUNT matches saved to $OUTPUT_JSON"
+        echo "[$end_date] Status: Success | Matches: $SCRAPED_COUNT | Start: $start_date | End: $end_date | Duration: ${duration}s" >> logs/scraper_status.log
     else
-        echo "[-] Scraper Failed."
-        echo "[$end_date] Status: Failed | Start: $start_date | End: $end_date | Duration: ${duration}s" >> logs/scraper_status.log
+        if [ "$SCRAPY_RC" -ne 0 ]; then
+            echo "[-] Scraper Failed (scrapy exit code $SCRAPY_RC)."
+        elif [ "$SCRAPED_COUNT" -lt 0 ]; then
+            echo "[-] Scraper Failed: $OUTPUT_JSON is missing or not valid JSON."
+        else
+            echo "[-] Scraper Failed: 0 matches scraped."
+            echo "    Either no target-league fixtures exist for $DATE, or the scrape broke."
+            echo "    Check logs/pipeline_output.log — a missing Playwright browser"
+            echo "    (after a playwright upgrade) is the usual cause; fix with:"
+            echo "        source venv/bin/activate && playwright install chromium"
+        fi
+        echo "[$end_date] Status: Failed | Matches: $SCRAPED_COUNT | Start: $start_date | End: $end_date | Duration: ${duration}s" >> logs/scraper_status.log
         exit 1
     fi
 fi
