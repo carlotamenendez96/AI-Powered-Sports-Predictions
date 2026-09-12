@@ -457,8 +457,10 @@ def _attach_open_bets(live_matches):
     Also filters `live_matches` in place: any match whose bets are
     ALL in a terminal status (WON / LOST / VOID / CASHED_OUT) is
     dropped from the live panel — there's no actionable bet left on
-    that fixture. Matches we never bet on stay on the panel as
-    informational live rows.
+    that fixture. Matches we never bet on are kept here as informational
+    live rows, but the panel hides them by default behind its client-side
+    "Bets only" toggle — they're only actionable once in-play betting is
+    real (no pre-match bet needed to bet live).
     """
     today_slip = os.path.join(OUTPUT_DIR, f"bets_{datetime.date.today().isoformat()}.json")
     if not os.path.exists(today_slip):
@@ -710,8 +712,9 @@ def _attach_open_bets(live_matches):
 
     # In-place filter: drop matches whose every bet is terminal. A
     # match with no bets at all stays on the panel (informational live
-    # row); a match where SOME bets are terminal but others still
-    # OPEN also stays (the open ones still need eyes on them).
+    # row, hidden by default by the template's "Bets only" toggle); a
+    # match where SOME bets are terminal but others still OPEN also
+    # stays (the open ones still need eyes on them).
     def _all_terminal(m):
         match_str = (m.get('match') or '').strip()
         total = bets_total.get(match_str, 0)

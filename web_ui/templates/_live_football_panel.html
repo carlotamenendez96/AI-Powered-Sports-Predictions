@@ -31,6 +31,17 @@
                 <button type="button" class="btn btn-outline-light" id="collapseAllBets"
                         title="Collapse or expand the open-bets strip on every match">Collapse bets</button>
             </div>
+            {# Bet-less live matches are only actionable if we ever place bets
+               IN-PLAY (no pre-match bet needed to bet live). Until then the
+               panel's job is watching pre-match bets to judge live / cashout
+               behaviour, so they're hidden by default. #}
+            <div class="form-check form-check-inline ms-2 mb-0">
+                <input class="form-check-input" type="checkbox" id="liveBetsOnly" checked>
+                <label class="form-check-label small text-white" for="liveBetsOnly"
+                       title="Show only live matches with an OPEN bet on them. Untick to also see matches we never bet on — useful only once live (in-play) betting is real, since then a bet-less match is still bettable.">
+                    Bets only
+                </label>
+            </div>
         </div>
         <div class="btn-group">
             <form action="/football/refresh_live" method="post" class="d-inline" onsubmit="triggerLive(event)">
@@ -80,7 +91,7 @@
             {% set _has_bet = item.open_bets and item.open_bets|length > 0 %}
             {# Stable-ish per-match key for the collapse state (localStorage). #}
             {% set _key = item.match_id or item.match %}
-            <div class="col-12 mb-2">
+            <div class="col-12 mb-2 live-match-col" data-has-bet="{{ 1 if _has_bet else 0 }}">
                 <div class="card {{ 'border-warning border-2' if _has_bet else 'border-secondary' }}">
                     <div class="card-body p-2">
                         <div class="row g-2 align-items-center">
@@ -216,6 +227,9 @@
             </div>
             {% endif %}
             {% endfor %}
+            {# Filled in by applyLiveBetsOnly(); empty (and invisible) when
+               nothing is being hidden. #}
+            <div class="col-12"><div id="liveHiddenNote" class="small text-muted"></div></div>
         </div>
     </div>
 </div>
@@ -385,6 +399,7 @@
     function wireLivePanel() {
         wireLiveCheckboxes();
         wireLiveCollapse();
+        wireLiveBetsOnly();
     }
 
     // "Auto 10m" = browser-driven UI refresh (Flashscore-only), persisted in
@@ -543,6 +558,58 @@
             betsBtn.textContent = liveLevels.bets.allCollapsed() ? 'Expand bets' : 'Collapse bets';
             betsBtn.disabled = matchesHidden;
         }
+    }
+
+    // "Bets only" filter. The live panel exists to watch the pre-match bets we
+    // actually hold and judge the live-adjust / cashout behaviour on them, so
+    // matches with no OPEN bet are hidden by default. They become useful only
+    // once in-play betting is real — then a bet-less live match is still
+    // bettable — which is why this is a toggle rather than a server-side drop.
+    //
+    // Purely client-side: the server still sends every live match, so flipping
+    // the checkbox is instant and no refresh is needed. State lives in
+    // localStorage, which is also what re-applies it after a panel swap (the
+    // fresh markup always arrives unfiltered).
+    const LIVE_BETS_ONLY_KEY = 'liveBetsOnly';
+
+    function liveBetsOnlyEnabled() {
+        // Absent key -> default ON (hide bet-less). Only an explicit '0' shows
+        // them, so private mode / quota failures fall back to the default.
+        try { return localStorage.getItem(LIVE_BETS_ONLY_KEY) !== '0'; }
+        catch (e) { return true; }
+    }
+
+    function applyLiveBetsOnly(on) {
+        let hidden = 0, total = 0;
+        document.querySelectorAll('.live-match-col').forEach(col => {
+            total++;
+            const hide = on && col.dataset.hasBet !== '1';
+            col.classList.toggle('d-none', hide);
+            if (hide) hidden++;
+        });
+        // Say what's being withheld — a filtered panel that silently drops
+        // two-thirds of the slate reads as a broken scrape.
+        const note = document.getElementById('liveHiddenNote');
+        if (note) {
+            note.textContent = hidden
+                ? hidden + ' of ' + total + ' live matches hidden \u2014 no open bet on them. '
+                  + 'Untick \u201cBets only\u201d to show them.'
+                : '';
+        }
+    }
+
+    function wireLiveBetsOnly() {
+        const cb = document.getElementById('liveBetsOnly');
+        const on = liveBetsOnlyEnabled();
+        if (cb) {
+            cb.checked = on;
+            cb.addEventListener('change', () => {
+                try { localStorage.setItem(LIVE_BETS_ONLY_KEY, cb.checked ? '1' : '0'); }
+                catch (e) { /* private mode / quota: state stays per-page */ }
+                applyLiveBetsOnly(cb.checked);
+            });
+        }
+        applyLiveBetsOnly(on);
     }
 
     wireLivePanel();
