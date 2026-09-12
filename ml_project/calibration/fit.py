@@ -17,15 +17,29 @@ will properly correct. C2's job is to produce the calibration table and
 flag any leagues where the in-sample fit doesn't even improve Brier.
 """
 
+import warnings
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
+from sklearn.exceptions import UndefinedMetricWarning
 from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import roc_auc_score
 
 from .diagnose import brier_multiclass, expected_calibration_error, log_loss_safe
 
 
 _EPS = 1e-6
+
+# Minimum acceptable Platt slope. A well-behaved calibrator rescales the
+# model's logit, so `a` sits somewhere near 1.0. A slope at or below this
+# means the calibrator has flattened the model's ordering into the league
+# base rate — and a negative slope actively inverts it. Either way the
+# argmax pick stops tracking the model, which is how the 2026-08-25 fit
+# shipped 27/37 leagues with at least one negative slope and turned away
+# favourites into home picks. Brier/ECE/log-loss are all blind to this
+# (Brier trades resolution for calibration and still improves), so the
+# slope bound is the gate that has to catch it.
+MIN_PLATT_SLOPE = 0.3
 
 
 def _safe_logit(p: np.ndarray) -> np.ndarray:
@@ -80,23 +94,79 @@ def apply_platt_multiclass(probs: np.ndarray,
     return cal / row_sums
 
 
+def _nan_to_none(x: float, ndigits: int = 4) -> Optional[float]:
+    """Round, mapping NaN to None so the result is valid JSON."""
+    return None if x is None or np.isnan(x) else round(float(x), ndigits)
+
+
+def _delta(after: Optional[float], before: Optional[float]) -> Optional[float]:
+    """after − before, or None when either side is undefined."""
+    if after is None or before is None:
+        return None
+    return round(after - before, 4)
+
+
+def discrimination(probs: np.ndarray, targets: np.ndarray) -> Dict[str, float]:
+    """Argmax accuracy + macro one-vs-rest AUC.
+
+    These are the *resolution* half of the Brier decomposition — the part a
+    base-rate-collapsing calibrator destroys while Brier still improves.
+    AUC is `None` when a class is absent from `targets` (undefined there);
+    callers must treat that as "no signal", not as a pass.
+    """
+    n_classes = probs.shape[1]
+    acc = float((np.argmax(probs, axis=1) == targets).mean())
+    try:
+        with warnings.catch_warnings():
+            # A league slice can be missing a class; we return None for AUC in
+            # that case, so sklearn's warning about it is noise.
+            warnings.simplefilter('ignore', UndefinedMetricWarning)
+            if n_classes == 2:
+                auc = float(roc_auc_score(targets, probs[:, 1]))
+            else:
+                auc = float(roc_auc_score(targets, probs, multi_class='ovr',
+                                          average='macro',
+                                          labels=list(range(n_classes))))
+    except ValueError:
+        auc = float('nan')
+    return {'accuracy': round(acc, 4), 'auc': _nan_to_none(auc)}
+
+
 def metrics(probs: np.ndarray, targets: np.ndarray) -> Dict[str, float]:
-    """Brier + log loss + ECE — same definitions C1 uses for comparability."""
+    """Brier + log loss + ECE + discrimination (accuracy / AUC).
+
+    Brier, log-loss and ECE are the same definitions C1 uses. Accuracy and
+    AUC are additive — they exist so the acceptance gates can see resolution
+    loss, which the other three cannot distinguish from a calibration win.
+    """
     ece, _ = expected_calibration_error(probs, targets)
-    return {
+    out = {
         'brier':    round(brier_multiclass(probs, targets), 4),
         'log_loss': round(log_loss_safe(probs, targets), 4),
         'ece':      round(ece, 4),
     }
+    out.update(discrimination(probs, targets))
+    return out
 
 
 def fit_league_calibrators(df, oof_probs, target_col, market: str,
                            min_n: int = 100,
-                           source_mode: str = 'full') -> Dict[str, dict]:
+                           source_mode: str = 'full',
+                           min_slope: float = MIN_PLATT_SLOPE,
+                           rejections: Optional[List[dict]] = None
+                           ) -> Dict[str, dict]:
     """Per league, fit Platt + record before/after metrics.
 
     `market` is 'oneXtwo' or 'ou' (used as key in the output dict).
     Returns: {league_name: {market: {platt, n, source_mode, before, after, improved}}}
+
+    A league/market is **rejected** (omitted from the result entirely, so the
+    league falls back to raw probabilities at inference) when either guard
+    trips:
+      - any fitted slope < `min_slope` — the calibrator has flattened or
+        inverted the model's ordering;
+      - argmax accuracy drops after calibration — resolution was traded away.
+    Pass a list as `rejections` to collect the reasons for reporting.
     """
     if market not in ('oneXtwo', 'ou'):
         raise ValueError(f"Unknown market: {market!r}")
@@ -136,6 +206,34 @@ def fit_league_calibrators(df, oof_probs, target_col, market: str,
         after = metrics(cal, t)
         improved = after['brier'] <= before['brier']
 
+        slopes = {c: platt[c]['a'] for c in platt}
+        worst_slope = min(slopes.values())
+        acc_delta = round(after['accuracy'] - before['accuracy'], 4)
+        reasons = []
+        if worst_slope < min_slope:
+            degenerate = [c for c, a in slopes.items() if a < min_slope]
+            reasons.append(
+                f"slope {worst_slope:.4f} < {min_slope} on {'/'.join(sorted(degenerate))}")
+        if acc_delta < 0:
+            reasons.append(
+                f"accuracy {before['accuracy']:.4f} -> {after['accuracy']:.4f} "
+                f"({acc_delta:+.4f})")
+        if reasons:
+            if rejections is not None:
+                rejections.append({
+                    'league': league,
+                    'market': market,
+                    'source_mode': source_mode,
+                    'n': int(n),
+                    'slopes': slopes,
+                    'acc_before': before['accuracy'],
+                    'acc_after': after['accuracy'],
+                    'acc_delta': acc_delta,
+                    'brier_delta': round(after['brier'] - before['brier'], 4),
+                    'reasons': reasons,
+                })
+            continue
+
         out[league] = {
             'n': int(n),
             'source_mode': source_mode,
@@ -145,6 +243,11 @@ def fit_league_calibrators(df, oof_probs, target_col, market: str,
             'improved': bool(improved),
             'brier_delta': round(after['brier'] - before['brier'], 4),
             'ece_delta':   round(after['ece']   - before['ece'],   4),
+            'acc_delta':   acc_delta,
+            # None rather than NaN — json.dump would emit a bare `NaN`, which
+            # is not valid JSON and trips strict parsers downstream.
+            'auc_delta':   _delta(after['auc'], before['auc']),
+            'worst_slope': round(worst_slope, 4),
         }
     return out
 

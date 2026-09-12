@@ -27,6 +27,7 @@ sys.path.insert(0, os.path.join(PROJECT_ROOT, 'ml_project'))
 from train_model import ModelTrainer
 from ml_project.calibration.diagnose import out_of_fold_predictions
 from ml_project.calibration.fit import (
+    MIN_PLATT_SLOPE,
     fit_league_calibrators,
     merge_calibrators,
 )
@@ -91,12 +92,18 @@ def _run_oof_for_mode(trainer, df_train, mode: str):
     return df_1x2, oof_1x2, df_ou, oof_ou
 
 
-def _fit_for_mode(df_1x2, oof_1x2, df_ou, oof_ou, mode: str):
-    """Fit Platt per league for both markets. Returns {league: {market: result}}."""
+def _fit_for_mode(df_1x2, oof_1x2, df_ou, oof_ou, mode: str, rejections=None):
+    """Fit Platt per league for both markets. Returns {league: {market: result}}.
+
+    Leagues whose calibrator flattens or inverts the model's ordering are
+    dropped by `fit_league_calibrators` and collected into `rejections`.
+    """
     cal_1x2 = fit_league_calibrators(df_1x2, oof_1x2, 'target_1x2', 'oneXtwo',
-                                      min_n=MIN_N_PER_LEAGUE, source_mode=mode)
+                                      min_n=MIN_N_PER_LEAGUE, source_mode=mode,
+                                      rejections=rejections)
     cal_ou  = fit_league_calibrators(df_ou,  oof_ou,  'target_ou',  'ou',
-                                      min_n=MIN_N_PER_LEAGUE, source_mode=mode)
+                                      min_n=MIN_N_PER_LEAGUE, source_mode=mode,
+                                      rejections=rejections)
     out = {}
     for league in set(cal_1x2) | set(cal_ou):
         out[league] = {}
@@ -105,6 +112,28 @@ def _fit_for_mode(df_1x2, oof_1x2, df_ou, oof_ou, mode: str):
         if league in cal_ou:
             out[league]['ou'] = cal_ou[league]
     return out
+
+
+def _rejection_table(rejections: list):
+    """Print the leagues dropped by the degenerate-calibrator guards.
+
+    A rejected league falls back to raw probabilities at inference, which is
+    the intended outcome — but it must be visible, not silent, or the file
+    just looks like it covers fewer leagues than expected.
+    """
+    print('\n=== Rejected by fit guards (fall back to raw probs) ===')
+    if not rejections:
+        print('None — every fitted calibrator kept the model\'s ordering.')
+        return
+    print(f'{"league":<35} {"market":<8} {"mode":<8} {"n":>5} '
+          f'{"worst_a":>8} {"acc_delta":>10}  reasons')
+    print('-' * 110)
+    for r in sorted(rejections, key=lambda x: (x['market'], x['league'])):
+        worst = min(r['slopes'].values())
+        print(f"{r['league'][:35]:<35} {r['market']:<8} {r['source_mode']:<8} "
+              f"{r['n']:>5} {worst:>8.4f} {r['acc_delta']:>+10.4f}  "
+              f"{'; '.join(r['reasons'])}")
+    print(f'\nRejected: {len(rejections)} league/market calibrators.')
 
 
 def _summary_table(label: str, results: dict):
@@ -139,14 +168,18 @@ def main():
     df_train = trainer.prepare_data()
     print(f'Prepared {len(df_train)} rows across {df_train["league"].nunique()} leagues.')
 
+    rejections = []
+
     # --- full-features OOF ---
     df_1x2_f, oof_1x2_f, df_ou_f, oof_ou_f = _run_oof_for_mode(trainer, df_train, 'full')
-    full_results = _fit_for_mode(df_1x2_f, oof_1x2_f, df_ou_f, oof_ou_f, 'full')
+    full_results = _fit_for_mode(df_1x2_f, oof_1x2_f, df_ou_f, oof_ou_f, 'full',
+                                 rejections=rejections)
     print(f'\nFull-mode fitted {len(full_results)} leagues.')
 
     # --- minimal-features OOF ---
     df_1x2_m, oof_1x2_m, df_ou_m, oof_ou_m = _run_oof_for_mode(trainer, df_train, 'minimal')
-    minimal_results = _fit_for_mode(df_1x2_m, oof_1x2_m, df_ou_m, oof_ou_m, 'minimal')
+    minimal_results = _fit_for_mode(df_1x2_m, oof_1x2_m, df_ou_m, oof_ou_m, 'minimal',
+                                    rejections=rejections)
     print(f'\nMinimal-mode fitted {len(minimal_results)} leagues.')
 
     # --- merge, prefer full ---
@@ -159,13 +192,16 @@ def main():
         'generated_at': datetime.datetime.now().isoformat(timespec='seconds'),
         'min_n_per_league': MIN_N_PER_LEAGUE,
         'n_splits': N_SPLITS,
+        'min_platt_slope': MIN_PLATT_SLOPE,
         'leagues': merged,
+        'rejected_at_fit': rejections,
     }
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     with open(args.out, 'w') as f:
         json.dump(payload, f, indent=2)
     print(f'\nSaved → {args.out}')
 
+    _rejection_table(rejections)
     _summary_table('Full-mode', full_results)
     _summary_table('Minimal-mode (covers leagues full mode misses)', minimal_results)
 

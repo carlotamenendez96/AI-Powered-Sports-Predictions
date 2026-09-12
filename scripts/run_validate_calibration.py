@@ -77,7 +77,15 @@ def filter_calibration_file(cal_path: str,
                 # No holdout data (league too small for C3). Conservative:
                 # keep the entry — it passed C2 in-sample. Note it.
                 continue
+            reasons = []
             if ho['regression_pct'] > max_regression_pct:
+                reasons.append(f"brier regression {ho['regression_pct']:.2f}% "
+                               f"> {max_regression_pct}%")
+            if not ho.get('discrimination_ok', True):
+                reasons.append(
+                    f"discrimination lost (acc {ho['acc_delta']:+.4f}, "
+                    f"auc {ho['auc_delta']}, worst slope {ho['worst_slope']})")
+            if reasons:
                 removed.append({
                     'league': league,
                     'market': market,
@@ -85,7 +93,11 @@ def filter_calibration_file(cal_path: str,
                     'regression_pct': ho['regression_pct'],
                     'brier_before': ho['before']['brier'],
                     'brier_after':  ho['after']['brier'],
+                    'acc_delta': ho.get('acc_delta'),
+                    'auc_delta': ho.get('auc_delta'),
+                    'worst_slope': ho.get('worst_slope'),
                     'n_test': ho['n_test'],
+                    'reasons': reasons,
                 })
                 del markets[market]
         if not markets:
@@ -306,16 +318,18 @@ def main():
         removed = filter_calibration_file(args.calibration, full_results,
                                           minimal_results, MAX_REGRESSION_PCT)
         if removed:
-            print(f'Removed {len(removed)} entry(ies) that regressed by '
-                  f'>{MAX_REGRESSION_PCT}% on holdout:')
+            print(f'Removed {len(removed)} entry(ies) that failed the holdout gates '
+                  f'(brier regression >{MAX_REGRESSION_PCT}%, or discrimination lost):')
             for r in removed:
                 print(f"  - {r['league']:<25} {r['market']:<8} source={r['source_mode']:<8} "
-                      f"regression=+{r['regression_pct']:.2f}% "
-                      f"(brier {r['brier_before']:.4f} → {r['brier_after']:.4f}, n_test={r['n_test']})")
+                      f"brier {r['brier_before']:.4f} → {r['brier_after']:.4f} "
+                      f"({r['regression_pct']:+.2f}%), n_test={r['n_test']}")
+                for reason in r.get('reasons', []):
+                    print(f"      · {reason}")
             print('Backup saved as <path>.prefilter.bak; production C4 will fall back '
                   'to raw probs for these (league, market) pairs.')
         else:
-            print('No entries failed the holdout regression threshold — nothing filtered.')
+            print('No entries failed the holdout gates — nothing filtered.')
 
 
 if __name__ == '__main__':

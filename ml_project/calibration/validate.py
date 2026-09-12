@@ -14,6 +14,8 @@ from typing import Dict, Tuple
 import numpy as np
 
 from .fit import (
+    MIN_PLATT_SLOPE,
+    _delta,
     apply_platt_binary,
     apply_platt_multiclass,
     fit_platt_binary,
@@ -66,11 +68,13 @@ def chronological_holdout_validate(df, oof_probs, target_col, market: str,
         if market == 'oneXtwo':
             params = fit_platt_multiclass(train_probs, train_t, n_classes=3)
             cal_test = apply_platt_multiclass(test_probs, params)
+            slopes = [a for a, _ in params]
         else:
             a, b = fit_platt_binary(train_probs[:, 1], train_t)
             cal_test = np.zeros_like(test_probs)
             cal_test[:, 1] = apply_platt_binary(test_probs[:, 1], a, b)
             cal_test[:, 0] = 1.0 - cal_test[:, 1]
+            slopes = [a]
 
         before = metrics(test_probs, test_t)
         after  = metrics(cal_test,    test_t)
@@ -82,6 +86,18 @@ def chronological_holdout_validate(df, oof_probs, target_col, market: str,
             2,
         )
 
+        # Discrimination on the holdout. Brier alone cannot see resolution
+        # loss — it improves when a flattened calibrator trades ordering for
+        # calibration — so accuracy/AUC and the slope are gated separately.
+        acc_delta = round(after['accuracy'] - before['accuracy'], 4)
+        auc_delta = _delta(after['auc'], before['auc'])
+        worst_slope = round(min(slopes), 4)
+        discrimination_ok = (
+            acc_delta >= 0
+            and (auc_delta is None or auc_delta >= 0)
+            and worst_slope >= MIN_PLATT_SLOPE
+        )
+
         out[league] = {
             'n_train':       int(split),
             'n_test':        int(n - split),
@@ -90,7 +106,13 @@ def chronological_holdout_validate(df, oof_probs, target_col, market: str,
             'after':         after,
             'brier_delta':   brier_delta,
             'regression_pct': regression_pct,
-            'improved':      bool(brier_delta <= 0),
+            'acc_delta':      acc_delta,
+            'auc_delta':      auc_delta,
+            'worst_slope':    worst_slope,
+            'discrimination_ok': bool(discrimination_ok),
+            # A calibrator counts as an improvement only if it improves Brier
+            # *without* giving up discrimination.
+            'improved':      bool(brier_delta <= 0 and discrimination_ok),
             'train_date_max': str(sub_sorted['date'].iloc[split - 1].date()) if 'date' in sub_sorted.columns else None,
             'test_date_min':  str(sub_sorted['date'].iloc[split].date())     if 'date' in sub_sorted.columns else None,
             'test_date_max':  str(sub_sorted['date'].iloc[-1].date())        if 'date' in sub_sorted.columns else None,
@@ -118,20 +140,33 @@ def aggregate_acceptance(results: Dict[str, dict],
     worst_regression = max((r['regression_pct'] for r in results.values()), default=0.0)
     worst_league = max(results.items(), key=lambda x: x[1]['regression_pct'])
 
+    n_discrimination_ok = sum(1 for r in results.values()
+                              if r.get('discrimination_ok', True))
+    degraded = sorted(league for league, r in results.items()
+                      if not r.get('discrimination_ok', True))
+
     improvement_rate = n_improved / n
     rate_ok = improvement_rate >= min_improvement_rate
     regression_ok = worst_regression <= max_regression_pct
+    # Any league that loses discrimination fails the batch outright. This is
+    # deliberately stricter than the Brier gates: a flattened calibrator scores
+    # *well* on Brier/ECE, so a rate-based threshold would let it through.
+    discrimination_ok = not degraded
 
-    return rate_ok and regression_ok, {
+    return rate_ok and regression_ok and discrimination_ok, {
         'n_leagues': n,
         'n_improved': n_improved,
         'improvement_rate': round(improvement_rate, 3),
         'worst_regression_pct': worst_regression,
         'worst_regression_league': worst_league[0],
+        'n_discrimination_ok': n_discrimination_ok,
+        'discrimination_degraded': degraded,
         'rate_ok': rate_ok,
         'regression_ok': regression_ok,
+        'discrimination_ok': discrimination_ok,
         'thresholds': {
             'min_improvement_rate': min_improvement_rate,
             'max_regression_pct': max_regression_pct,
+            'min_platt_slope': MIN_PLATT_SLOPE,
         },
     }
