@@ -3,15 +3,15 @@
         "football": {
             "bankrolls": {
                 "value": {
-                    "current": 702.25,
+                    "current": 698.4,
                     "initial": 1000.0
                 },
                 "conviction": {
-                    "current": 915.09,
+                    "current": 912.69,
                     "initial": 1000.0
                 },
                 "model": {
-                    "current": 639.81,
+                    "current": 625.03,
                     "initial": 1000.0
                 }
             },
@@ -20,6 +20,7 @@
             "min_stake_eur": 2.0,
             "max_stake_pct": 0.015,
             "ev_cap_value": 0.05,
+            "use_league_calibration": false,
             "conviction_min_confidence": 0.58,
             "conviction_min_odds": 1.4,
             "conviction_stake_pct": 0.005,
