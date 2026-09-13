@@ -145,25 +145,24 @@
         {# ---- Cashout backtest reminder (weekly, LOCAL — phase 8d) ---- #}
         <div class="card mt-4 {% if not backtest or backtest.stale %}border-warning{% else %}border-success{% endif %}">
             <div class="card-header d-flex justify-content-between align-items-center
-                        {% if not backtest or backtest.stale %}bg-warning text-dark{% else %}bg-success text-white{% endif %}">
+                        {% if not backtest or backtest.stale %}bg-warning text-dark{% else %}bg-success text-white{% endif %}"
+                 role="button" data-bs-toggle="collapse" data-bs-target="#backtestBody"
+                 aria-expanded="true" aria-controls="backtestBody" style="cursor:pointer;">
                 <h5 class="mb-0">⚡ Cashout Backtest <span class="small fw-normal">· weekly · local</span></h5>
-                <div class="d-flex align-items-center gap-2">
-                    <form action="/run_backtest" method="post" class="d-inline" onsubmit="triggerBacktest(event)">
+                <span class="small d-flex align-items-center gap-2">
+                    {# The run button lives inside a toggle header, so its clicks
+                       must not bubble up and collapse the pane underneath it. #}
+                    <form action="/run_backtest" method="post" class="d-inline"
+                          onsubmit="triggerBacktest(event)" onclick="event.stopPropagation();">
                         <button type="submit" id="runBacktestBtn"
                                 class="btn btn-sm {% if not backtest or backtest.stale %}btn-dark{% else %}btn-light text-success fw-bold{% endif %}">
                             ▶ Run backtest now
                         </button>
                     </form>
-                    {# outline-dark on the yellow stale header, outline-light on green #}
-                    <button class="btn btn-sm {% if not backtest or backtest.stale %}btn-outline-dark{% else %}btn-outline-light{% endif %} pane-toggle" type="button"
-                            data-bs-toggle="collapse" data-bs-target="#backtestBody"
-                            aria-expanded="true" aria-controls="backtestBody"
-                            aria-label="Collapse cashout backtest">
-                        <span class="chev">▾</span>
-                    </button>
-                </div>
+                    <span id="backtestChevron">▴</span>
+                </span>
             </div>
-            <div class="collapse show" id="backtestBody" data-pane-key="pane.backtest">
+            <div id="backtestBody" class="collapse show">
             <div class="card-body">
                 {% if not backtest %}
                 <p class="mb-0 text-muted">No backtest has run yet. Run it to start scoring the
@@ -234,23 +233,23 @@
         {# ---- Edge watch: is the model beating the price at all? ---- #}
         <div class="card mt-4 {% if not edge %}border-secondary{% elif edge.ev_works %}border-success{% else %}border-danger{% endif %}">
             <div class="card-header d-flex justify-content-between align-items-center
-                        {% if not edge %}bg-secondary text-white{% elif edge.ev_works %}bg-success text-white{% else %}bg-danger text-white{% endif %}">
+                        {% if not edge %}bg-secondary text-white{% elif edge.ev_works %}bg-success text-white{% else %}bg-danger text-white{% endif %}"
+                 role="button" data-bs-toggle="collapse" data-bs-target="#edgeBody"
+                 aria-expanded="true" aria-controls="edgeBody" style="cursor:pointer;">
                 <h5 class="mb-0">🎯 Edge Watch <span class="small fw-normal">· model vs market</span></h5>
-                <div class="d-flex align-items-center gap-2">
-                    <form action="/run_edge_check" method="post" class="d-inline" onsubmit="triggerEdgeCheck(event)">
+                <span class="small d-flex align-items-center gap-2">
+                    {% if edge %}<span class="badge bg-light text-dark">{{ edge.bets }} settled</span>{% endif %}
+                    {# stopPropagation: the run button sits inside a toggle header. #}
+                    <form action="/run_edge_check" method="post" class="d-inline"
+                          onsubmit="triggerEdgeCheck(event)" onclick="event.stopPropagation();">
                         <button type="submit" id="runEdgeCheckBtn" class="btn btn-sm btn-light fw-bold">
                             ▶ Run edge check
                         </button>
                     </form>
-                    <button class="btn btn-sm btn-outline-light pane-toggle" type="button"
-                            data-bs-toggle="collapse" data-bs-target="#edgeBody"
-                            aria-expanded="true" aria-controls="edgeBody"
-                            aria-label="Collapse edge watch">
-                        <span class="chev">▾</span>
-                    </button>
-                </div>
+                    <span id="edgeChevron">▴</span>
+                </span>
             </div>
-            <div class="collapse show" id="edgeBody" data-pane-key="pane.edge">
+            <div id="edgeBody" class="collapse show">
             <div class="card-body">
                 {% if not edge %}
                 <p class="mb-0 text-muted">No edge check has run yet. Run it to score every settled
@@ -392,28 +391,6 @@
             </div>
         </div>
 
-        {# Restore each pane's collapsed state DURING PARSE — before Bootstrap's
-           JS attaches and before first paint — so a pane the user collapsed
-           doesn't flash open on every post-run reload. #}
-        <script>
-        (function () {
-            document.querySelectorAll('[data-pane-key]').forEach(function (el) {
-                var collapsed = false;
-                try {
-                    collapsed = localStorage.getItem(el.dataset.paneKey) === 'collapsed';
-                } catch (e) { /* private window / blocked storage: stay expanded */ }
-                if (!collapsed) return;
-                el.classList.remove('show');
-                var btn = document.querySelector('[data-bs-target="#' + el.id + '"]');
-                if (btn) {
-                    btn.setAttribute('aria-expanded', 'false');
-                    var chev = btn.querySelector('.chev');
-                    if (chev) chev.textContent = '▸';
-                }
-            });
-        })();
-        </script>
-
         <div class="text-center mt-5">
             <p class="text-muted small">
                 Adding a new sport: create a Flask blueprint at <code>web_ui/&lt;sport&gt;/routes.py</code>,
@@ -510,20 +487,33 @@
     }
     setInterval(pollEdgeCheck, 2000);
 
-    // Persist each pane's collapsed state and flip its chevron. `show`/`hide`
-    // (not `shown`/`hidden`) so the arrow turns as the animation starts.
-    document.querySelectorAll('[data-pane-key]').forEach(function (el) {
-        var btn = document.querySelector('[data-bs-target="#' + el.id + '"]');
-        function sync(open) {
-            try { localStorage.setItem(el.dataset.paneKey, open ? 'open' : 'collapsed'); }
-            catch (e) { /* storage blocked: collapse still works, just isn't remembered */ }
-            if (!btn) return;
-            btn.setAttribute('aria-expanded', open ? 'true' : 'false');
-            var chev = btn.querySelector('.chev');
-            if (chev) chev.textContent = open ? '▾' : '▸';
+    // Persist collapse state per card across visits. Same helper and same
+    // ▴/▾ convention as the dashboard's Cumulative League Performance card
+    // (dashboard.html), so the two pages behave identically.
+    // Each entry: [collapseBodyId, chevronId, localStorageKey, defaultOpen].
+    function wireCollapsible(bodyId, chevronId, key, defaultOpen) {
+        const body = document.getElementById(bodyId);
+        const chevron = document.getElementById(chevronId);
+        if (!body || !chevron) return;
+        const stored = localStorage.getItem(key);
+        const open = stored === null ? defaultOpen : stored === '1';
+        if (open) {
+            body.classList.add('show');
+            chevron.textContent = '▴';
+        } else {
+            body.classList.remove('show');
+            chevron.textContent = '▾';
         }
-        el.addEventListener('show.bs.collapse', function () { sync(true); });
-        el.addEventListener('hide.bs.collapse', function () { sync(false); });
-    });
+        body.addEventListener('shown.bs.collapse', () => {
+            localStorage.setItem(key, '1');
+            chevron.textContent = '▴';
+        });
+        body.addEventListener('hidden.bs.collapse', () => {
+            localStorage.setItem(key, '0');
+            chevron.textContent = '▾';
+        });
+    }
+    wireCollapsible('backtestBody', 'backtestChevron', 'backtestOpen', true);
+    wireCollapsible('edgeBody',     'edgeChevron',     'edgeOpen',     true);
 </script>
 {% endblock %}
