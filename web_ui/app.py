@@ -252,7 +252,11 @@ def index():
                           league_stats=league_stats,
                           live_matches=live_matches[:50],
                           scraped_data=scraped_data,
-                          auto_cashout_armed=_auto_cashout_armed())
+                          auto_cashout_armed=_auto_cashout_armed(),
+                          # Football-only reports, rendered at the bottom of
+                          # this page (they used to sit on the landing page).
+                          backtest=_latest_backtest_summary(),
+                          edge=_latest_edge_summary())
 
 
 # Selection → adjusted-probs key for fair-value cashout estimation.
@@ -2768,10 +2772,12 @@ def inject_sports():
     return dict(sports=SPORTS)
 
 
-# --- Sport-agnostic landing page ---
-# Cashout backtest is a weekly LOCAL cadence (output/ is gitignored — a cloud
-# agent sees nothing), so instead of a scheduler we surface a staleness reminder
-# + the latest momentum_fade Δ (phase 8d) on the landing page. See
+# --- Football betting reports (rendered at the bottom of /football/) ---
+# Both panes used to live on the sport-agnostic landing page; they are
+# football-only, so they and their run routes moved onto the football
+# blueprint. Cashout backtest is a weekly LOCAL cadence (output/ is gitignored
+# — a cloud agent sees nothing), so instead of a scheduler we surface a
+# staleness reminder + the latest momentum_fade Δ (phase 8d). See
 # FOOTBALL_NEXT_STEPS.md "Weekly backtest re-run".
 _BACKTEST_STALE_DAYS = 7
 
@@ -2823,7 +2829,7 @@ def _latest_backtest_summary():
     }
 
 
-@app.route('/run_backtest', methods=['POST'])
+@football_bp.route('/run_backtest', methods=['POST'])
 def run_backtest():
     """Launch the cashout backtest (scripts/run_backtest.py) server-side, same
     subprocess+TASKS pattern as Predict/Verify/Retrain. Self-service for the
@@ -2832,7 +2838,7 @@ def run_backtest():
     separate, human/Claude judgment step, not this button."""
     if TASKS.get('backtest') and TASKS['backtest'].get('process') and TASKS['backtest']['process'].poll() is None:
         flash('Backtest is already running!', 'warning')
-        return redirect(url_for('landing'))
+        return redirect(url_for('football.index'))
     try:
         script_path = os.path.join(PROJECT_ROOT, 'scripts', 'run_backtest.py')
         log_file = open(os.path.join(LOG_DIR, 'backtest.log'), 'w')
@@ -2849,10 +2855,10 @@ def run_backtest():
               'Nudge me to evaluate the momentum_fade Δ once it lands.', 'info')
     except Exception as e:
         flash(f"Error starting backtest: {e}", 'danger')
-    return redirect(url_for('landing'))
+    return redirect(url_for('football.index'))
 
 
-# Edge check sits beside the cashout backtest: same LOCAL cadence, same
+# Edge check sits beside the cashout backtest on /football/: same cadence, same
 # "mechanical run, human reads the number" split. It answers whether the model
 # is beating the price at all — see scripts/run_edge_check.py and CLAUDE.md
 # "No measured edge over the market".
@@ -2918,7 +2924,7 @@ def _latest_edge_summary():
     }
 
 
-@app.route('/run_edge_check', methods=['POST'])
+@football_bp.route('/run_edge_check', methods=['POST'])
 def run_edge_check():
     """Launch scripts/run_edge_check.py server-side — same subprocess+TASKS
     pattern as the cashout backtest. Read-only over output/; it writes nothing
@@ -2926,7 +2932,7 @@ def run_edge_check():
     if (TASKS.get('edge_check') and TASKS['edge_check'].get('process')
             and TASKS['edge_check']['process'].poll() is None):
         flash('Edge check is already running!', 'warning')
-        return redirect(url_for('landing'))
+        return redirect(url_for('football.index'))
     try:
         script_path = os.path.join(PROJECT_ROOT, 'scripts', 'run_edge_check.py')
         log_file = open(os.path.join(LOG_DIR, 'edge_check.log'), 'w')
@@ -2941,9 +2947,10 @@ def run_edge_check():
         flash('Edge check started — the pane refreshes when it finishes.', 'info')
     except Exception as e:
         flash(f"Error starting edge check: {e}", 'danger')
-    return redirect(url_for('landing'))
+    return redirect(url_for('football.index'))
 
 
+# --- Sport-agnostic landing page ---
 @app.route('/')
 def landing():
     """Sport picker + portfolio summary. Active sports link to their dashboards.
@@ -2954,9 +2961,7 @@ def landing():
         bets_dir = sport.get('bets_dir')
         if bets_dir:
             sport_summaries[sport['slug']] = compute_sport_summary(bets_dir)['totals']
-    return render_template('landing.html', sport_summaries=sport_summaries,
-                           backtest=_latest_backtest_summary(),
-                           edge=_latest_edge_summary())
+    return render_template('landing.html', sport_summaries=sport_summaries)
 
 
 @app.route('/betting')
