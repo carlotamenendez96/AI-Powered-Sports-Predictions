@@ -220,6 +220,157 @@
             </div>
         </div>
 
+        {# ---- Edge watch: is the model beating the price at all? ---- #}
+        <div class="card mt-4 {% if not edge %}border-secondary{% elif edge.ev_works %}border-success{% else %}border-danger{% endif %}">
+            <div class="card-header d-flex justify-content-between align-items-center
+                        {% if not edge %}bg-secondary text-white{% elif edge.ev_works %}bg-success text-white{% else %}bg-danger text-white{% endif %}">
+                <h5 class="mb-0">🎯 Edge Watch <span class="small fw-normal">· model vs market</span></h5>
+                <form action="/run_edge_check" method="post" class="d-inline" onsubmit="triggerEdgeCheck(event)">
+                    <button type="submit" id="runEdgeCheckBtn" class="btn btn-sm btn-light fw-bold">
+                        ▶ Run edge check
+                    </button>
+                </form>
+            </div>
+            <div class="card-body">
+                {% if not edge %}
+                <p class="mb-0 text-muted">No edge check has run yet. Run it to score every settled
+                    bet against the price it was taken at.</p>
+                {% else %}
+                {# Counters #}
+                <div class="d-flex flex-wrap gap-4 align-items-center mb-3">
+                    <div>
+                        <div class="small text-muted text-uppercase">last run</div>
+                        <div class="fw-semibold">
+                            {{ edge.last_run }}
+                            {% if edge.stale %}
+                            <span class="badge bg-warning text-dark ms-1">stale · {{ edge.days_since }}d</span>
+                            {% else %}
+                            <span class="badge bg-secondary ms-1">{{ edge.days_since }}d ago</span>
+                            {% endif %}
+                        </div>
+                    </div>
+                    <div>
+                        <div class="small text-muted text-uppercase">settled bets</div>
+                        <div class="fw-semibold fs-5">{{ edge.bets }}</div>
+                    </div>
+                    <div>
+                        <div class="small text-muted text-uppercase">P/L</div>
+                        <div class="fw-semibold fs-5 {% if edge.pnl > 0 %}text-success{% elif edge.pnl < 0 %}text-danger{% endif %}">
+                            €{{ '%+.2f'|format(edge.pnl) }}
+                        </div>
+                    </div>
+                    <div>
+                        <div class="small text-muted text-uppercase">ROI</div>
+                        <div class="fw-semibold fs-5 {% if edge.roi and edge.roi > 0 %}text-success{% elif edge.roi and edge.roi < 0 %}text-danger{% endif %}">
+                            {% if edge.roi is not none %}{{ '%+.1f'|format(edge.roi * 100) }}%{% else %}—{% endif %}
+                        </div>
+                    </div>
+                    <div>
+                        <div class="small text-muted text-uppercase">EV signal</div>
+                        <div class="fw-semibold fs-5 {% if edge.ev_works %}text-success{% else %}text-danger{% endif %}">
+                            ρ {{ '%+.3f'|format(edge.rho) if edge.rho is not none else '—' }}
+                            <span class="small fw-normal text-muted">
+                                {{ 'working' if edge.ev_works else 'not working' }}
+                            </span>
+                        </div>
+                    </div>
+                </div>
+
+                {% if not edge.ev_works and edge.rho is not none %}
+                <div class="alert alert-danger py-2 px-3 small mb-3">
+                    Claimed EV does <strong>not</strong> predict realised return
+                    (Spearman ρ = {{ '%+.3f'|format(edge.rho) }} over {{ edge.ev_n }} bets).
+                    ROI should rise as claimed EV rises; while ρ ≤ 0 the EV gate is selecting
+                    for the model's own error, not for value.
+                </div>
+                {% endif %}
+
+                <div class="row g-3">
+                    {# Lanes #}
+                    <div class="col-md-6">
+                        <div class="small text-muted text-uppercase mb-1">by lane</div>
+                        <table class="table table-sm table-bordered mb-0">
+                            <thead class="table-light">
+                                <tr><th>Lane</th><th class="text-end">Bets</th><th class="text-end">P/L</th><th class="text-end">ROI</th></tr>
+                            </thead>
+                            <tbody>
+                                {% for l in edge.lanes %}
+                                <tr>
+                                    <td class="text-capitalize">{{ l.lane }}</td>
+                                    <td class="text-end">{{ l.bets }}</td>
+                                    <td class="text-end {% if l.pnl > 0 %}text-success{% elif l.pnl < 0 %}text-danger{% endif %}">
+                                        {{ '%+.2f'|format(l.pnl) }}
+                                    </td>
+                                    <td class="text-end fw-semibold {% if l.roi and l.roi > 0 %}text-success{% elif l.roi and l.roi < 0 %}text-danger{% endif %}">
+                                        {% if l.roi is not none %}{{ '%+.1f'|format(l.roi * 100) }}%{% else %}—{% endif %}
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+
+                    {# EV buckets — the diagnostic that matters #}
+                    <div class="col-md-6">
+                        <div class="small text-muted text-uppercase mb-1">realised ROI by claimed EV</div>
+                        <table class="table table-sm table-bordered mb-0">
+                            <thead class="table-light">
+                                <tr><th>Claimed EV</th><th class="text-end">Bets</th><th class="text-end">Win%</th><th class="text-end">ROI</th></tr>
+                            </thead>
+                            <tbody>
+                                {% for b in edge.buckets %}
+                                <tr>
+                                    <td><code>{{ b.bucket }}</code></td>
+                                    <td class="text-end">{{ b.bets }}</td>
+                                    <td class="text-end">{{ '%.0f'|format(b.winrate * 100) }}%
+                                        <span class="text-muted small">/ {{ '%.0f'|format(b.breakeven_winrate * 100) }}%</span>
+                                    </td>
+                                    <td class="text-end fw-semibold {% if b.roi and b.roi > 0 %}text-success{% elif b.roi and b.roi < 0 %}text-danger{% endif %}">
+                                        {% if b.roi is not none %}{{ '%+.1f'|format(b.roi * 100) }}%{% else %}—{% endif %}
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                        <div class="form-text">Win% shown as actual / break-even needed.</div>
+                    </div>
+                </div>
+
+                {# Market baseline — fills in as odds-preserved days accrue #}
+                <div class="small text-muted text-uppercase mt-3 mb-1">model vs “back the favourite”</div>
+                {% if edge.mb_matches %}
+                <div class="d-flex flex-wrap gap-4 align-items-center">
+                    <div><span class="text-muted small">scoreable days</span>
+                        <span class="fw-semibold ms-1">{{ edge.mb_days }}</span>
+                        <span class="text-muted small">({{ edge.mb_matches }} matches)</span></div>
+                    <div><span class="text-muted small">model</span>
+                        <span class="fw-semibold ms-1">{{ '%.1f'|format(edge.mb_model_acc * 100) }}%</span></div>
+                    <div><span class="text-muted small">favourite</span>
+                        <span class="fw-semibold ms-1">{{ '%.1f'|format(edge.mb_market_acc * 100) }}%</span></div>
+                    <div>
+                        <span class="badge {% if edge.mb_edge_pp > 0 %}bg-success{% else %}bg-danger{% endif %}">
+                            {{ '%+.1f'|format(edge.mb_edge_pp) }} pp
+                        </span>
+                    </div>
+                </div>
+                {% else %}
+                <p class="mb-0 small text-muted">
+                    <span class="badge bg-secondary">0 scoreable days</span>
+                    Verification before {{ edge.calibration_off_date }} overwrote the pre-match slate
+                    and dropped its odds, so those {{ edge.mb_unscoreable }} days can't be scored.
+                    This fills in one day at a time from now on.
+                </p>
+                {% endif %}
+                {% endif %}
+
+                <p class="mb-0 small text-muted mt-3">
+                    Settled bets only (CASHED_OUT and VOID excluded — their P/L reflects a cashout
+                    or refund, not whether the pick was right). The run is mechanical (this button);
+                    reading it is not. See <code>CLAUDE.md</code> → “No measured edge over the market”.
+                </p>
+            </div>
+        </div>
+
         <div class="text-center mt-5">
             <p class="text-muted small">
                 Adding a new sport: create a Flask blueprint at <code>web_ui/&lt;sport&gt;/routes.py</code>,
@@ -275,5 +426,45 @@
         }).catch(() => { /* network blip: skip */ });
     }
     setInterval(pollBacktest, 2000);
+
+    // Edge-check button: same fire-and-poll shape as the backtest above.
+    let edgeCheckRunning = false;
+
+    function triggerEdgeCheck(event) {
+        event.preventDefault();
+        const form = event.target;
+        fetch(form.action, { method: 'POST' })
+            .then(r => {
+                if (r.ok) {
+                    const btn = document.getElementById('runEdgeCheckBtn');
+                    if (btn) {
+                        btn.disabled = true;
+                        btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Running...';
+                    }
+                } else {
+                    alert('Failed to start edge check.');
+                }
+            })
+            .catch(err => console.error(err));
+    }
+
+    function pollEdgeCheck() {
+        fetch('/status').then(r => r.json()).then(data => {
+            if (!data.edge_check) return;
+            const st = data.edge_check.state;
+            const btn = document.getElementById('runEdgeCheckBtn');
+            if (st === 'running') {
+                edgeCheckRunning = true;
+                if (btn) {
+                    btn.disabled = true;
+                    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Running...';
+                }
+            } else if (edgeCheckRunning && (st === 'completed' || st === 'error')) {
+                edgeCheckRunning = false;
+                location.reload();
+            }
+        }).catch(() => { /* network blip: skip */ });
+    }
+    setInterval(pollEdgeCheck, 2000);
 </script>
 {% endblock %}

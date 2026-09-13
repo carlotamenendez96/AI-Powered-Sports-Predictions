@@ -118,6 +118,7 @@ TASKS = {
     'leagues': {'process': None, 'log': 'leagues.log'},
     'retrain': {'process': None, 'log': 'retrain.log'},
     'backtest': {'process': None, 'log': 'backtest.log'},
+    'edge_check': {'process': None, 'log': 'edge_check.log'},
 }
 
 @football_bp.route('/')
@@ -2851,6 +2852,98 @@ def run_backtest():
     return redirect(url_for('landing'))
 
 
+# Edge check sits beside the cashout backtest: same LOCAL cadence, same
+# "mechanical run, human reads the number" split. It answers whether the model
+# is beating the price at all — see scripts/run_edge_check.py and CLAUDE.md
+# "No measured edge over the market".
+_EDGE_CHECK_STALE_DAYS = 14
+
+
+def _latest_edge_summary():
+    """Read the newest output/edge_checks/*.json for the landing-page pane.
+
+    Returns None if the check has never run. Best-effort — any read error
+    returns None so the pane degrades to its empty state rather than 500ing
+    the whole landing page."""
+    try:
+        files = glob.glob(os.path.join(OUTPUT_DIR, 'edge_checks', '*.json'))
+        if not files:
+            return None
+        newest = max(files, key=os.path.getmtime)
+        with open(newest) as f:
+            rep = json.load(f)
+    except Exception:
+        return None
+
+    mtime = datetime.datetime.fromtimestamp(os.path.getmtime(newest))
+    days_since = (datetime.datetime.now() - mtime).days
+    ev = rep.get('ev', {}) or {}
+    mb = rep.get('market_baseline', {}) or {}
+    overall = rep.get('overall', {}) or {}
+
+    # Lanes sorted best-ROI-first so the one that is working reads at a glance.
+    lanes = []
+    for lane, a in (rep.get('by_lane') or {}).items():
+        lanes.append({'lane': lane, 'bets': a.get('bets', 0),
+                      'pnl': a.get('pnl', 0.0), 'roi': a.get('roi')})
+    lanes.sort(key=lambda r: (r['roi'] is None, -(r['roi'] or 0)))
+
+    rho = ev.get('rho')
+    edge_pp = None
+    if mb.get('model_acc') is not None and mb.get('market_acc') is not None:
+        edge_pp = round((mb['model_acc'] - mb['market_acc']) * 100, 2)
+
+    return {
+        'last_run': mtime.strftime('%Y-%m-%d %H:%M'),
+        'days_since': days_since,
+        'stale': days_since >= _EDGE_CHECK_STALE_DAYS,
+        'bets': overall.get('bets', 0),
+        'stake': overall.get('stake', 0.0),
+        'pnl': overall.get('pnl', 0.0),
+        'roi': overall.get('roi'),
+        'lanes': lanes,
+        'rho': rho,
+        # The headline verdict, phrased so the pane says what it means.
+        'ev_works': (rho is not None and rho > 0),
+        'ev_n': ev.get('n', 0),
+        'buckets': [b for b in (ev.get('buckets') or []) if b.get('bets')],
+        'split': rep.get('calibration_split') or {},
+        'calibration_off_date': rep.get('calibration_off_date'),
+        'mb_days': mb.get('days', 0),
+        'mb_matches': mb.get('matches', 0),
+        'mb_model_acc': mb.get('model_acc'),
+        'mb_market_acc': mb.get('market_acc'),
+        'mb_edge_pp': edge_pp,
+        'mb_unscoreable': mb.get('unscoreable_days', 0),
+    }
+
+
+@app.route('/run_edge_check', methods=['POST'])
+def run_edge_check():
+    """Launch scripts/run_edge_check.py server-side — same subprocess+TASKS
+    pattern as the cashout backtest. Read-only over output/; it writes nothing
+    but its own report, so it is safe to run at any time."""
+    if (TASKS.get('edge_check') and TASKS['edge_check'].get('process')
+            and TASKS['edge_check']['process'].poll() is None):
+        flash('Edge check is already running!', 'warning')
+        return redirect(url_for('landing'))
+    try:
+        script_path = os.path.join(PROJECT_ROOT, 'scripts', 'run_edge_check.py')
+        log_file = open(os.path.join(LOG_DIR, 'edge_check.log'), 'w')
+        env = os.environ.copy()
+        ml_paths = [PROJECT_ROOT, os.path.join(PROJECT_ROOT, 'ml_project')]
+        env['PYTHONPATH'] = os.pathsep.join(
+            [p for p in ml_paths + [env.get('PYTHONPATH', '')] if p])
+        proc = subprocess.Popen(
+            ['venv/bin/python', script_path], cwd=PROJECT_ROOT,
+            stdout=log_file, stderr=subprocess.STDOUT, env=env)
+        TASKS['edge_check'] = {'process': proc, 'start_time': datetime.datetime.now()}
+        flash('Edge check started — the pane refreshes when it finishes.', 'info')
+    except Exception as e:
+        flash(f"Error starting edge check: {e}", 'danger')
+    return redirect(url_for('landing'))
+
+
 @app.route('/')
 def landing():
     """Sport picker + portfolio summary. Active sports link to their dashboards.
@@ -2862,7 +2955,8 @@ def landing():
         if bets_dir:
             sport_summaries[sport['slug']] = compute_sport_summary(bets_dir)['totals']
     return render_template('landing.html', sport_summaries=sport_summaries,
-                           backtest=_latest_backtest_summary())
+                           backtest=_latest_backtest_summary(),
+                           edge=_latest_edge_summary())
 
 
 @app.route('/betting')
