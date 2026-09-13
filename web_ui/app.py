@@ -141,8 +141,11 @@ def index():
         except:
              predictions.append({'filename': basename, 'date': 'Unknown', 'type': 'Prediction', 'count': 0})
              
-    # matches_*.json files
-    matches_files = glob.glob(os.path.join(OUTPUT_DIR, 'matches_*.json'))
+    # matches_*.json (pre-match slate, carries odds) + results_*.json
+    # (verification scrape output). Separate files since the verification
+    # run stopped overwriting the slate — see bin/run_verification.sh.
+    matches_files = (glob.glob(os.path.join(OUTPUT_DIR, 'matches_*.json'))
+                     + glob.glob(os.path.join(OUTPUT_DIR, 'results_*.json')))
     scraped_data = []
     for f in matches_files:
         basename = os.path.basename(f)
@@ -1671,7 +1674,9 @@ def delete_file(filename):
 _ARCHIVE_ALL_PATTERNS = {
     'predictions':   ('predictions_*.csv',),
     'verifications': ('verification_*.csv',),
-    'scraped':       ('matches_*.json',),
+    # results_*.json is the verification scrape's own output. It used to be
+    # written over matches_*.json; both are listed so neither is invisible.
+    'scraped':       ('matches_*.json', 'results_*.json'),
 }
 
 

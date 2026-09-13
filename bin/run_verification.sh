@@ -15,7 +15,14 @@ else
     TARGET_DATE=$1
 fi
 
-RESULTS_JSON="output/matches_$TARGET_DATE.json"
+# Results go to their OWN file. They used to be written back over
+# output/matches_<date>.json with `-O`, which destroyed the pre-match slate:
+# verification-mode parsing reads final scores and does not re-read the
+# 1X2 odds, so every verified day lost its odds and the market baseline
+# ("how would backing the favourite have done?") became unanswerable after
+# the fact. Keeping them apart preserves the odds for every settled day.
+RESULTS_JSON="output/results_$TARGET_DATE.json"
+MATCHES_JSON="output/matches_$TARGET_DATE.json"
 PREDICTIONS_CSV="output/predictions_$TARGET_DATE.csv"
 BETS_FILE="output/bets_$TARGET_DATE.json"
 VERIFICATION_CSV="output/verification_$TARGET_DATE.csv"
@@ -83,6 +90,16 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 echo "[+] Results saved to $RESULTS_JSON"
+
+# Confirm the pre-match slate (and with it the 1X2 odds) survived this run.
+# Not fatal — verification works without it — but a missing/odds-less slate
+# means this day can never be scored against the market baseline.
+if [ -s "$MATCHES_JSON" ]; then
+    ODDS_N=$(python3 -c "import json;d=json.load(open('$MATCHES_JSON'));print(sum(1 for m in d if m.get('interaction_1x2_1')))" 2>/dev/null || echo "?")
+    echo "[+] Pre-match slate preserved at $MATCHES_JSON ($ODDS_N matches with odds)."
+else
+    echo "[!] No pre-match slate at $MATCHES_JSON — market-baseline scoring unavailable for $TARGET_DATE."
+fi
 
 # 5. Run Evaluation — only if we have predictions to compare against.
 # The evaluator streams its accuracy summary to stdout (still visible
