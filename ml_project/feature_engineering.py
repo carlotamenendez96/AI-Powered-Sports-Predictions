@@ -8,6 +8,20 @@ from rapidfuzz import process, fuzz
 # Suppress FutureWarning for GroupBy (Pandas 2.1+ transition)
 warnings.simplefilter(action='ignore', category=FutureWarning)
 
+# Rolling-form windows, as (n_matches, column_suffix).
+#
+# THE single source of truth for both sides of the pipeline: training builds
+# these in `_calculate_rolling`, and `predict_matches.get_team_stats` reads
+# the same constant to derive serve-time form from the same MatchHistory
+# corpus. Adding a window here changes both at once — which is the point,
+# since a window present in training but absent at serve time is exactly the
+# train/serve skew this constant exists to prevent.
+#
+# The empty suffix on the 5-match window is deliberate: `H_form_pts` etc. are
+# the long-standing column names and every trained model, feature manifest and
+# heuristic references them. Keep it.
+FORM_WINDOWS = ((5, ''), (10, '_l10'), (15, '_l15'))
+
 class FeatureEngineer:
     def __init__(self):
         pass
@@ -137,8 +151,9 @@ class FeatureEngineer:
         # 0. Implied Probabilities
         df = self.add_implied_probabilities(df)
         
-        # 1. Last 5 Games features (Standard)
-        df = self._calculate_rolling(df, window=5, suffix="")
+        # 1. Rolling form over every window in FORM_WINDOWS (L5 + L10 + L15),
+        #    computed in a single pass. L5 keeps the unsuffixed column names.
+        df = self._calculate_rolling_multi(df, FORM_WINDOWS)
 
         # 2. League Encoding
         df = self.add_league_encoding(df)
@@ -152,6 +167,14 @@ class FeatureEngineer:
         if 'H_form_pts' in df.columns and 'A_form_pts' in df.columns:
             df['form_pts_diff'] = df['H_form_pts'] - df['A_form_pts']
             df['abs_form_pts_diff'] = df['form_pts_diff'].abs()
+
+        # 4b. Form trend: recent form minus long-horizon form. Positive means
+        #     the team is playing above its own baseline right now. Mirrored
+        #     verbatim in predict_matches.get_team_stats.
+        for side in ('H', 'A'):
+            short_c, long_c = f'{side}_form_pts', f'{side}_form_pts_l15'
+            if short_c in df.columns and long_c in df.columns:
+                df[f'{side}_form_trend'] = df[short_c] - df[long_c]
 
         # 5. Specific Home/Away Form
         df = self._calculate_specific_home_away(df)
@@ -203,60 +226,65 @@ class FeatureEngineer:
         
         return df
 
+    # Stat keys `_get_stats_from_history` returns, and the column stem each
+    # maps to. Kept here so the train side and `predict_matches` build the
+    # same column names from the same list.
+    FORM_STAT_KEYS = ('pts', 'gf', 'ga', 'ou', 'str', 'sf', 'sa', 'cf', 'ca')
+
     def _calculate_rolling(self, df, window, suffix):
-        """Helper to calculate rolling stats for a specific window."""
+        """Rolling stats for a single window. Thin wrapper kept for callers
+        that want one window; `_calculate_rolling_multi` does the work."""
+        return self._calculate_rolling_multi(df, [(window, suffix)])
+
+    def _calculate_rolling_multi(self, df, windows):
+        """Rolling stats for several windows in ONE pass over the history.
+
+        `windows` is [(n_matches, suffix), ...] — normally FORM_WINDOWS.
+
+        Why one pass: the expensive part is the per-row date filter
+        `team_matches[team][date < d]`, which scans that team's whole history
+        for every match. Slicing it once and taking a different `.tail(n)` per
+        window costs a few list appends instead of re-running the scan, so
+        three windows cost roughly one window's time rather than three.
+
+        Emits exactly the columns the single-window version did for each
+        (window, suffix) pair, so `_calculate_rolling(df, 5, "")` is unchanged.
+        """
         teams = pd.concat([df['home_team'], df['away_team']]).unique()
-        
-        # Dictionaries to store results
-        h_stats = {f'H_form_pts{suffix}': [], f'H_form_gf{suffix}': [], f'H_form_ga{suffix}': [], f'H_form_ou{suffix}': [], f'H_form_str{suffix}': [],
-                   f'H_form_sf{suffix}': [], f'H_form_sa{suffix}': [], f'H_form_cf{suffix}': [], f'H_form_ca{suffix}': []}
-        a_stats = {f'A_form_pts{suffix}': [], f'A_form_gf{suffix}': [], f'A_form_ga{suffix}': [], f'A_form_ou{suffix}': [], f'A_form_str{suffix}': [],
-                   f'A_form_sf{suffix}': [], f'A_form_sa{suffix}': [], f'A_form_cf{suffix}': [], f'A_form_ca{suffix}': []}
-        
+
+        # {suffix: {column: [values]}} for each side.
+        h_stats = {sfx: {f'H_form_{k}{sfx}': [] for k in self.FORM_STAT_KEYS}
+                   for _, sfx in windows}
+        a_stats = {sfx: {f'A_form_{k}{sfx}': [] for k in self.FORM_STAT_KEYS}
+                   for _, sfx in windows}
+
         # Pre-calculate team match histories for speed
         team_matches = {}
         for team in teams:
-            # Get all matches for team
             tm = df[(df['home_team'] == team) | (df['away_team'] == team)].sort_values('date')
             team_matches[team] = tm
-            
-        # Iterate through main DF to assign rolling stats
+
         for idx, row in df.iterrows():
             date = row['date']
-            home = row['home_team']
-            away = row['away_team']
-            
-            # HOME TEAM Stats
-            h_hist = team_matches[home][team_matches[home]['date'] < date].tail(window)
-            stats = self._get_stats_from_history(h_hist, home)
-            h_stats[f'H_form_pts{suffix}'].append(stats['form_pts'])
-            h_stats[f'H_form_gf{suffix}'].append(stats['form_gf'])
-            h_stats[f'H_form_ga{suffix}'].append(stats['form_ga'])
-            h_stats[f'H_form_ou{suffix}'].append(stats['form_ou'])
-            h_stats[f'H_form_str{suffix}'].append(stats['form_str'])
-            # Shot/Corner logic (if standard fields exist) - simplified for now
-            h_stats[f'H_form_sf{suffix}'].append(stats.get('form_sf', 0))
-            h_stats[f'H_form_sa{suffix}'].append(stats.get('form_sa', 0))
-            h_stats[f'H_form_cf{suffix}'].append(stats.get('form_cf', 0))
-            h_stats[f'H_form_ca{suffix}'].append(stats.get('form_ca', 0))
+            for team, side, store in ((row['home_team'], 'H', h_stats),
+                                      (row['away_team'], 'A', a_stats)):
+                # One date filter per team per row, shared across windows.
+                hist = team_matches[team][team_matches[team]['date'] < date]
+                for n, sfx in windows:
+                    stats = self._get_stats_from_history(hist.tail(n), team)
+                    for k in self.FORM_STAT_KEYS:
+                        # form_str has no numeric default; the rest fall back to 0
+                        # exactly as the single-window version did.
+                        default = '' if k == 'str' else 0
+                        store[sfx][f'{side}_form_{k}{sfx}'].append(
+                            stats.get(f'form_{k}', default))
 
-            # AWAY TEAM Stats
-            a_hist = team_matches[away][team_matches[away]['date'] < date].tail(window)
-            stats = self._get_stats_from_history(a_hist, away)
-            a_stats[f'A_form_pts{suffix}'].append(stats['form_pts'])
-            a_stats[f'A_form_gf{suffix}'].append(stats['form_gf'])
-            a_stats[f'A_form_ga{suffix}'].append(stats['form_ga'])
-            a_stats[f'A_form_ou{suffix}'].append(stats['form_ou'])
-            a_stats[f'A_form_str{suffix}'].append(stats['form_str'])
-            a_stats[f'A_form_sf{suffix}'].append(stats.get('form_sf', 0))
-            a_stats[f'A_form_sa{suffix}'].append(stats.get('form_sa', 0))
-            a_stats[f'A_form_cf{suffix}'].append(stats.get('form_cf', 0))
-            a_stats[f'A_form_ca{suffix}'].append(stats.get('form_ca', 0))
-            
         # Assign columns
-        for k, v in h_stats.items(): df[k] = v
-        for k, v in a_stats.items(): df[k] = v
-        
+        for store in (h_stats, a_stats):
+            for cols in store.values():
+                for k, v in cols.items():
+                    df[k] = v
+
         return df
 
     def _get_stats_from_history(self, history_df: pd.DataFrame, target_team: str) -> dict:

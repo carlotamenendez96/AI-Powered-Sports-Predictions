@@ -39,7 +39,25 @@ class ModelTrainer:
             # Shots and Corners (Overall Form)
             'H_form_sf', 'H_form_sa', 'H_form_cf', 'H_form_ca',
             'A_form_sf', 'A_form_sa', 'A_form_cf', 'A_form_ca',
-            
+
+            # Longer-horizon form (2026-09-13). The L5 columns above are noisy
+            # over a 5-match sample; L10/L15 give the model a slower-moving
+            # read of the same quantities so it can separate a genuine level
+            # shift from a short streak. Built by FeatureEngineer from
+            # FORM_WINDOWS and mirrored at serve time by
+            # predict_matches.get_team_stats off the same corpus.
+            # Shot/corner columns are omitted here: they are absent for 23 of
+            # 44 leagues (league-clustered, ~50% of rows) and a longer window
+            # buys no extra coverage, so they would add width without signal.
+            'H_form_pts_l10', 'H_form_gf_l10', 'H_form_ga_l10',
+            'A_form_pts_l10', 'A_form_gf_l10', 'A_form_ga_l10',
+            'H_form_pts_l15', 'H_form_gf_l15', 'H_form_ga_l15',
+            'A_form_pts_l15', 'A_form_gf_l15', 'A_form_ga_l15',
+            # Momentum: short-window form minus long-window form. The level is
+            # already in the columns above; these give the model the delta
+            # directly rather than making it learn a subtraction.
+            'H_form_trend', 'A_form_trend',
+
             # Implied Probabilities
             'IP_H', 'IP_D', 'IP_A',
 

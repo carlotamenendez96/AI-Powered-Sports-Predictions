@@ -5,7 +5,7 @@ import xgboost as xgb
 import json
 import os
 import datetime
-from feature_engineering import FeatureEngineer
+from feature_engineering import FeatureEngineer, FORM_WINDOWS
 from entity_resolver import EntityResolver
 from data_loader import DataLoader
 import glob
@@ -191,29 +191,24 @@ class MatchPredictor:
 
             return {'pts': pts, 'gf': gf, 'ga': ga, 'sf': sf, 'sa': sa, 'cf': cf, 'ca': ca, 'ou': ou}
 
-        # 1. Overall Form (Last 5)
-        last_5 = team_games.tail(5)
-        # Calculate means
-        sums = {'pts': 0, 'gf': 0, 'ga': 0, 'sf': 0, 'sa': 0, 'cf': 0, 'ca': 0, 'ou': 0}
-        count = 0
-
-        for _, row in last_5.iterrows():
-            s = extract_match_stats(row, team_name)
-            for k in sums: sums[k] += s.get(k, 0) # Handle missing stats (NaN -> 0)
-            count += 1
-
-        if count > 0:
-            stats['form_pts'] = sums['pts'] / count
-            stats['form_gf'] = sums['gf'] / count
-            stats['form_ga'] = sums['ga'] / count
-            stats['form_sf'] = sums['sf'] / count
-            stats['form_sa'] = sums['sa'] / count
-            stats['form_cf'] = sums['cf'] / count
-            stats['form_ca'] = sums['ca'] / count
-            stats['form_ou'] = sums['ou'] / count # Proportion of Over 2.5
-        else:
-             # Default to 0? Or averages?
-            stats.update({k: 0 for k in ['form_pts', 'form_gf', 'form_ga', 'form_sf', 'form_sa', 'form_cf', 'form_ca', 'form_ou']})
+        # 1. Overall form, one entry per window in FORM_WINDOWS (L5 + L10 + L15).
+        #    Mirrors FeatureEngineer._calculate_rolling_multi: same corpus, same
+        #    windows, same "mean over the last n matches before this date", so
+        #    the serve-time columns match what training built. The `.tail(50)`
+        #    slice above comfortably covers the largest window.
+        #    L5 keeps the unsuffixed key names the rest of this file reads.
+        for n, sfx in FORM_WINDOWS:
+            window = team_games.tail(n)
+            sums = {'pts': 0, 'gf': 0, 'ga': 0, 'sf': 0, 'sa': 0, 'cf': 0, 'ca': 0, 'ou': 0}
+            count = 0
+            for _, row in window.iterrows():
+                s = extract_match_stats(row, team_name)
+                for k in sums:
+                    sums[k] += s.get(k, 0)   # Handle missing stats (NaN -> 0)
+                count += 1
+            for k in sums:
+                # form_ou is the proportion of matches over 2.5; the rest are means.
+                stats[f'form_{k}{sfx}'] = (sums[k] / count) if count > 0 else 0
 
         # 2. Venue Specific Form (Last 5 Home or Away)
         # If we are verifying this team as HOME team, we want last 5 HOME games.
@@ -372,8 +367,14 @@ class MatchPredictor:
                 # print(f"Error calculating stats for {scraper_home} vs {scraper_away}: {e}")
                 h_stats = None # Will fallback to zeros
             
-            if not h_stats: h_stats = {k: 0 for k in ['form_pts', 'form_gf', 'form_ga', 'form_sf', 'form_sa', 'form_cf', 'form_ca', 'form_ou']}
-            if not a_stats: a_stats = {k: 0 for k in ['form_pts', 'form_gf', 'form_ga', 'form_sf', 'form_sa', 'form_cf', 'form_ca', 'form_ou']}
+            # Zero-fill for a team with no corpus history. Must cover every
+            # window in FORM_WINDOWS, not just L5, or the input-row build below
+            # raises KeyError on the suffixed columns.
+            _zero_form = {f'form_{stem}{sfx}': 0
+                          for _, sfx in FORM_WINDOWS
+                          for stem in ('pts', 'gf', 'ga', 'sf', 'sa', 'cf', 'ca', 'ou')}
+            if not h_stats: h_stats = dict(_zero_form)
+            if not a_stats: a_stats = dict(_zero_form)
             if not h_spec: h_spec = {k: 0 for k in ['spec_pts', 'spec_gf', 'spec_ga', 'spec_sf', 'spec_sa']}
             if not a_spec: a_spec = {k: 0 for k in ['spec_pts', 'spec_gf', 'spec_ga', 'spec_sf', 'spec_sa']}
 
@@ -428,6 +429,19 @@ class MatchPredictor:
                 'H_def': h_def, 'A_def': a_def,
                 'att_def_diff': att_def_diff,
             }
+
+            # Longer-horizon form + trend, mirroring FeatureEngineer exactly:
+            # same windows (FORM_WINDOWS), same corpus, same subtraction.
+            # Only pts/gf/ga are carried — see the note on common_features in
+            # train_model.py for why shots/corners stay L5-only.
+            for _n, _sfx in FORM_WINDOWS:
+                if not _sfx:
+                    continue    # L5 is already in the row above, unsuffixed
+                for _stem in ('pts', 'gf', 'ga'):
+                    input_row[f'H_form_{_stem}{_sfx}'] = h_stats[f'form_{_stem}{_sfx}']
+                    input_row[f'A_form_{_stem}{_sfx}'] = a_stats[f'form_{_stem}{_sfx}']
+            input_row['H_form_trend'] = h_stats['form_pts'] - h_stats['form_pts_l15']
+            input_row['A_form_trend'] = a_stats['form_pts'] - a_stats['form_pts_l15']
             
             # Generate DF for prediction
             input_df = pd.DataFrame([input_row])
