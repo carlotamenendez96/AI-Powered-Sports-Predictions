@@ -1,9 +1,18 @@
 .vscode/
 .claude/
 data_sets/*
-!data_sets/betting_config.json
 !data_sets/target_leagues.json
-!data_sets/team_mappings.json
+
+# Per-deployment state, NOT source. betting_config.json carries live lane
+# bankroll balances that the running web UI rewrites on every settlement;
+# team_mappings.json is appended by EntityResolver as it resolves new clubs.
+# Tracking them made every `git status` dirty and made merges dangerous — a
+# merge to main on 2026-09-18 would have written a stale branch snapshot of the
+# bankrolls over live ones while the server held the file open.
+# Both ship as templates and are seeded on first use by
+# ml_project/config_bootstrap.py (also runnable directly).
+!data_sets/betting_config.template.json
+!data_sets/team_mappings.template.json
 logs/
 output/
 output_basketball/

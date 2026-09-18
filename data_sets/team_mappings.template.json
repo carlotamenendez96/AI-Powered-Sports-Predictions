@@ -182,7 +182,7 @@
     "Salzburg": "Red Bull Salzburg",
     "FCSB": null,
     "Feyenoord": "Feyenoord Rotterdam",
-    "Malmo FF": "Malm\u00f6 FF",
+    "Malmo FF": "Malmö FF",
     "Celtic": "Celtic Glasgow",
     "Celta Vigo": "Celta de Vigo",
     "Bologna": "Bologna FC",
@@ -263,7 +263,7 @@
     "Olympiacos Piraeus": null,
     "Schalke": "Schalke 04",
     "Dusseldorf": "Fortuna Dusseldorf",
-    "Preussen Munster": "Preu\u00dfen M\u00fcnster",
+    "Preussen Munster": "Preußen Münster",
     "Royale Union SG": null,
     "Club Brugge KV": "Club Brugge",
     "AC Milan": "Milan",
@@ -547,6 +547,9 @@
     "Corum": null,
     "Amedspor": null,
     "Sabah Baku": null,
-    "Preu\u00c3\u009fen M\u00c3\u00bcnster": "Preu\u00dfen M\u00fcnster",
-    "King\u00c2\u0092s Lynn": "King\u0092s Lynn"
+    "PreuÃen MÃ¼nster": "Preußen Münster",
+    "KingÂs Lynn": "Kings Lynn",
+    "Ararat-Armenia": null,
+    "H. Beer Sheva": null,
+    "Levski Sofia": null
 }

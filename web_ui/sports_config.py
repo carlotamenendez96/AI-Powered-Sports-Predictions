@@ -9,9 +9,23 @@ place.
 
 import json
 import os
+import sys
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG_PATH = os.path.join(PROJECT_ROOT, 'data_sets', 'betting_config.json')
+
+# betting_config.json is gitignored deployment state (live bankroll balances),
+# so a fresh clone has only the template. Seed it before the first read or the
+# UI comes up with zero bankrolls and no obvious reason why. Path insert is
+# defensive: app.py adds PROJECT_ROOT for us, but this module is also imported
+# by CLI paths that have not.
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+try:
+    from ml_project.config_bootstrap import seed_all as _seed_all
+    _seed_all()
+except Exception:       # never let seeding break config access
+    pass
 
 LANES = ('value', 'conviction', 'model')
 

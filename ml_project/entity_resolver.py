@@ -11,6 +11,19 @@ class EntityResolver:
         self.load_data()
         
     def load_data(self):
+        # team_mappings.json is gitignored deployment state; seed it from the
+        # committed template so a fresh clone starts with the 553 accumulated
+        # mappings instead of re-learning every club from scratch.
+        try:
+            from config_bootstrap import seed_all
+            seed_all()
+        except Exception:
+            try:
+                from ml_project.config_bootstrap import seed_all
+                seed_all()
+            except Exception:
+                pass    # degrade to fuzzy matching rather than fail to load
+
         if os.path.exists(self.elo_file):
             with open(self.elo_file, 'r') as f:
                 self.elo_data = json.load(f)

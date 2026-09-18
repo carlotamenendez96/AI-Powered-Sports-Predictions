@@ -193,6 +193,11 @@ case "$SPORT" in
         ;;
 esac
 
+# Deployment-state files (bankrolls, learned team names) are gitignored and
+# ship as templates; seed them so a fresh clone does not start with zero
+# bankrolls and an empty resolver. Never overwrites an existing file.
+python3 -m ml_project.config_bootstrap || true
+
 echo ""
 echo "========== setup_data.sh DONE =========="
 echo ""
