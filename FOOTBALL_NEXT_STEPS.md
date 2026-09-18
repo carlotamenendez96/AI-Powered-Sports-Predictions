@@ -398,6 +398,310 @@ Operator decisions (2026-05-27): **scope = bettable** (WC/Euro **qualifiers + UE
 
 **Open items:** confirm non-European qualifier codes (CONMEBOL etc. — Spain only shows European; check a South-American nation); whether `home_elo`/`away_elo` are pre- or post-match (shift by one per team if post); eloratings country-code ↔ Flashscore name mapping table; ToS sanity check on eloratings scraping (light, infrequent, cache the per-country files).
 
+## E — Market-edge validation program (scoped 2026-09-18)
+
+Architectural review of the stack against the Dixon-Coles / hybrid-generative
+literature. Supersedes nothing; it re-frames what the D2→D3→D4 arc established
+and adds the tests that arc never ran. **Read the diagnosis first — it changes
+which experiments are worth running.**
+
+### The diagnosis, corrected
+
+CLAUDE.md says the model's probabilities are "compressed toward 0.5". **On the
+full OOF distribution that is false**, and the correction matters:
+
+| | model | market |
+| --- | ---: | ---: |
+| sd of P(Home) | 0.1525 | 0.1526 |
+| sd of P(Draw) | 0.0416 | 0.0411 |
+| mean P(Draw) | 0.2631 | 0.2578 (actual 0.2615) |
+
+The spread matches the market's almost exactly and the mean draw probability is
+*better* calibrated than the market's. What is actually true: the model's
+**deviation** from the market (sd 0.0306, >5pp on 10.1% of matches) is noise —
+`corr(deviation, market residual) = -0.0031` — and the market is closer to the
+realised outcome in *every* deviation bucket:
+
+| model − market, P(H) | n | market | model | actual |
+| --- | ---: | ---: | ---: | ---: |
+| −0.10..−0.05 | 409 | 0.509 | 0.447 | **0.526** |
+| −0.05..−0.02 | 2,047 | 0.435 | 0.404 | **0.444** |
+| −0.02..+0.02 | 5,928 | 0.433 | 0.433 | 0.429 |
+| +0.02..+0.05 | 2,560 | 0.432 | 0.465 | **0.425** |
+| +0.05..+0.10 | 738 | 0.388 | 0.453 | **0.419** |
+
+On the top decile of disagreement, model Brier 0.5777 vs market 0.5723.
+
+**So the mechanism is adverse selection, not miscalibration.** Every gate in
+`/auto_wager` conditions on that deviation; selecting on a zero-signal residual
+guarantees paying the vig plus a selection penalty. The odds-ladder shape in
+`report_performance.py` is the *selected* tail, not a global property. **No
+change of model form can help unless it makes the deviation informative, and
+the deviation can only become informative from information the price lacks.**
+
+### Three findings the arc never surfaced
+
+1. **Pinnacle closing odds are in the corpus and unused.** 316 of 368
+   `MatchHistory` files carry `PSCH/PSCD/PSCA`; 71,124 of 79,550 prepared rows
+   (89%) have them. Devigged, on the same 101,319 corpus rows:
+
+   | price | Brier | logloss |
+   | --- | ---: | ---: |
+   | B365 opening (what `IP_*` uses) | 0.60070 | 1.00424 |
+   | **Pinnacle closing** | **0.59811** | **1.00020** |
+
+   Model OOF Brier is 0.60124. The true ranking is
+   `model < B365 opening < Pinnacle closing` — the model is not failing to beat
+   "the market", it is failing to beat a *soft opening line* that is itself
+   0.26% Brier behind the sharp close. **CLV is therefore computable offline
+   today, on 169k rows, with zero new data acquisition.**
+2. **`IP_*` means two different things.** `data_loader` falls back to
+   `AvgC*`/`MaxC*` — **closing** prices — when Bet365 columns are absent, and
+   the fallback *overwrites* `B365H`, erasing provenance. Measured: **63,218 of
+   186,557 corpus rows (33.9%)** feed a closing price into `IP_*`. Not target
+   leakage, but a train/serve skew in the most important feature block (serving
+   happens the night before, off a Flashscore scrape) concentrated exactly on
+   the extra leagues with the least other data. Also mixes overrounds, since
+   `IP_*` is raw `1/odds` and is never devigged. **Fixed by E-fix below.**
+3. **No RPS anywhere in the codebase.** The target is ordinal (H ≻ D ≻ A) and
+   every metric in the repo (Brier, log-loss, accuracy) is ordinality-blind.
+   Measured on OOF: model RPS 0.20470 vs market 0.20377 (+0.46% worse).
+
+### Experiments, in priority order
+
+Each is gated: nothing advances without clearing the one below it. **Every
+variant that adds features must also beat a width-matched shuffled placebo** —
+`colsample_bytree=0.6` means adding columns perturbs tree choices by ~0.03%
+Brier on its own, and in the H2H test (FEATURE_ENGINEERING_IDEAS 1.6) the
+placebo *outscored* the real block. `scripts/experiment_h2h.py` has the pattern.
+
+- [x] **E-fix — opening/closing odds provenance. DONE 2026-09-18.** See finding 2.
+  `data_loader` now resolves the reference price through an explicit
+  `ODDS_PREFERENCE` chain (every opening source before every closing source),
+  row-wise rather than file-wise, and records `odds_source` /
+  `odds_is_closing` / `odds_overround` instead of overwriting `B365H` in
+  silence. A second `CLOSING_PREFERENCE` chain exposes `close_H/D/A` +
+  `close_source` (Pinnacle closing preferred) — **evaluation only, never a
+  feature**, since at serve time it does not exist.
+  **Deliberately value-preserving**: within the closing block the order is
+  `AvgC → MaxC` first, reproducing the old fallback exactly. Diffed against the
+  old loader over all 186,561 rows — **0 rows lost, 186,312 unchanged, 239
+  recovered** (rows whose `B365H` was blank and which now fall through to an
+  opening price instead of being dropped) and **10 corrected** (literal
+  `B365H = 0.0`, previously turned into NaN by `add_implied_probabilities`).
+  **The 33.9% closing share did NOT shrink, and cannot**: those ~63k rows come
+  from files that carry no opening price at all. The fix makes the
+  contamination *visible and filterable*, it does not remove it. Two decisions
+  it opens, both now measurable and both deliberately left out of a provenance
+  fix:
+    1. *Should the closing fallback use Pinnacle instead of AvgC?* PSC is
+       sharper (corpus Brier 0.59930 vs 0.59957) but mean overround differs —
+       B365 1.0609, AvgC 1.0863, **PSC 1.0314** — so switching shifts the
+       `IP_*` scale by ~5.5pp across 31% of the corpus. That is a model change,
+       not a provenance fix; A/B it.
+    2. *Should `IP_*` be devigged at all?* It is raw `1/odds`, so the
+       bookmaker margin rides directly in the model's strongest features and
+       differs by source. Devigging would remove the confound outright and make
+       `IP_*` an actual probability estimate; keep the overround as its own
+       column if the margin itself carries signal. Requires retrain +
+       recalibration, so gate it behind the ladder below.
+  **This fix is a precondition for E0**: without `odds_is_closing`, a CLV study
+  would silently compute closing-vs-closing on a third of its rows.
+- [x] **E0 — CLV against Pinnacle closing. DONE 2026-09-18 — GATE 0 FAILED.**
+  `scripts/experiment_clv.py`, 11,735 OOF rows, every one carrying both an
+  opening taken price and a closing quote (PSC 7,445 / B365C 4,290).
+
+  **Accuracy ladder** — the ordering predicted by the review holds exactly:
+
+  | | RPS | Brier |
+  | --- | ---: | ---: |
+  | model | 0.20472 | 0.60120 |
+  | taken price (B365 opening) | 0.20374 | 0.59870 |
+  | **closing price** | **0.20277** | **0.59657** |
+
+  **Gate 0: nats added over the CLOSING price = +0.00000** (threshold +0.005).
+  Against the taken price it is +0.00002. The model adds nothing to either, and
+  nothing at all to the sharpest line available.
+
+  **CLV by selection rule** — the model is worse than the dumbest baseline:
+
+  | selection | n | CLV (log) | 95% CI |
+  | --- | ---: | ---: | --- |
+  | model | 11,735 | **−0.17%** | [−0.31, −0.03] |
+  | favourite | 11,735 | −0.03% | [−0.17, +0.10] |
+  | random | 11,735 | −0.73% | [−0.89, −0.56] |
+
+  It beats random, so it has *some* skill, but it loses to "back the shortest
+  price" and its CI excludes zero on the wrong side: **the market moves away
+  from its picks.**
+
+  **Two apparent positives, both killed by controls.** The raw run showed a
+  perfectly monotone odds ladder (+0.95% CLV at 1.0–1.5 → −2.67% at 3.0–5.0)
+  and a conviction-gate replica at **+1.07% [+0.51, +1.65]** — which would have
+  been the first positive edge signal in the whole investigation, and which
+  agreed with the conviction lane's +4.9% live ROI. Both are artifacts:
+
+  1. **The odds ladder is a DEVIGGING ARTIFACT.** Proportional devigging
+     understates a favourite's probability by more when the margin is larger,
+     so comparing a high-margin taken price to a low-margin close manufactures
+     positive CLV on short prices and negative on long ones with no line
+     movement whatsoever. Splitting by closing source proves it — measured
+     overrounds: taken 1.0719, PSC close **1.0381**, B365C close **1.0786**:
+
+     | odds band | same-book (B365→B365, n=4,290) | cross-book (B365→PSC, n=7,445) |
+     | --- | ---: | ---: |
+     | 1.0–1.5 | **−0.13%** [−0.52,+0.25] | **+1.55%** [+1.29,+1.83] |
+     | 1.5–2.0 | −0.07% [−0.40,+0.26] | +0.13% [−0.11,+0.37] |
+     | 2.0–2.5 | −0.26% [−0.68,+0.15] | −0.61% [−0.92,−0.30] |
+     | 2.5–3.0 | −0.34% [−1.31,+0.64] | −1.30% [−1.88,−0.72] |
+     | 3.0–5.0 | — | −2.59% [−4.15,−1.05] |
+
+     **In the margin-matched subset the ladder vanishes entirely** — not one
+     band's CI excludes zero. The gradient tracks the margin gap, not the line.
+  2. **The conviction gate adds nothing beyond the price band.** Odds-matched
+     within 1.40–1.70, conviction is **+1.07% [+0.51,+1.65]** against the rest
+     at **+0.63% [+0.36,+0.89]** — overlapping CIs. (All 285 conviction picks
+     fall in 1.40–1.70, so the wider 1.40–2.00 comparison is itself confounded
+     by price.) Same-book, conviction is +0.58% [−0.30,+1.44] — not significant.
+     The gate is a short-price filter wearing a confidence condition.
+
+  **Durable methodological rule: cross-book CLV with proportional devigging is
+  invalid.** Any future CLV work is same-book, or uses a margin-robust devig
+  (Shin) — which would also recover the 7,445 PSC rows currently unusable for
+  this comparison, and is the cheapest follow-up here.
+
+  **Consequence for the ladder**: gates 1–5 are unreachable for the current
+  stack. E1 remains worth running as the clean null (~2 days); E2 stage 1 is
+  now the only test in the program targeting information the price lacks.
+- [ ] **E1 — Residual model against the market.**
+  *Hypothesis*: train on what the market gets wrong rather than hoping
+  disagreement is useful.
+  *Implementation*: `logit(P_market)` as XGBoost `base_margin` so the model
+  learns only the correction; features = current 56 minus `B365*`/`IP_*`.
+  *Control*: current model stacked post-hoc. *Variant*: native base_margin.
+  *Success*: nats added over market > +0.005 (100× today's +0.00000);
+  ΔRPS ≥ −0.0012; CLV > 0.
+  *Prior*: near-zero — `corr(deviation, residual) = −0.003` and the stacked
+  blend weight on the model is **negative**. Worth ~2 days as the clean null,
+  and `base_margin` is worth having in the codebase regardless.
+- [x] **E2 stage 1 — line movement (open → close). DONE 2026-09-18 — DO NOT BUILD
+  STAGE 2.** `scripts/experiment_drift.py`, same-book throughout, both books run
+  as a replication check (B365 n=54,076, overround 1.0677→1.0671; Pinnacle
+  n=44,478, 1.0397→1.0349).
+
+  **A. The prize is real but small.** Fitting `y ~ logit(P_open) + drift`:
+
+  | book | outcome | drift sd | coef | z | nats added |
+  | --- | --- | ---: | ---: | ---: | ---: |
+  | B365 | home | 0.149 | +0.979 | +15.4 | +0.00211 |
+  | B365 | draw | 0.074 | +1.004 | +7.0 | +0.00043 |
+  | B365 | away | 0.154 | +1.018 | +15.4 | +0.00219 |
+  | PS | home | 0.152 | +1.019 | +14.8 | +0.00245 |
+  | PS | away | 0.156 | +1.056 | +14.6 | +0.00236 |
+
+  The **coefficient is ≈ 1.0 in every cell**, which is the textbook result: drift
+  should be taken at face value, i.e. `logit(P_open) + drift = logit(P_close)` is
+  the best estimate and the opening line is simply inefficient relative to the
+  close. Total information content of the whole open→close move is ~0.002 nats.
+
+  **B. Drift is weakly forecastable — and that is not enough.** OOF XGBoost on
+  the production feature set with drift as target:
+
+  | book | pearson | spearman | R² | pred sd vs actual sd |
+  | --- | ---: | ---: | ---: | --- |
+  | B365 | +0.135 | +0.133 | +0.0004 | 0.040 vs 0.150 |
+  | PS | +0.165 | +0.155 | +0.0020 | 0.046 vs 0.144 |
+
+  Correlation is consistently positive across both books, so there *is* a thread
+  — but R² ≈ 0 and the forecast moves barely a quarter as much as reality.
+  Acting on it (back whichever side has the larger predicted drift):
+
+  | book | n | CLV | 95% CI | share of ceiling | flat ROI |
+  | --- | ---: | ---: | --- | ---: | ---: |
+  | B365 | 11,730 | **+0.723%** | **[+0.540, +0.897]** | 10.6% of +6.81% | −9.9% |
+  | PS | 8,125 | +0.077% | [−0.108, +0.262] | 1.4% of +5.57% | −5.8% |
+
+  **The B365 CLV is statistically significant and it still does not survive.**
+  Four reasons, in order of severity:
+  1. **It does not replicate in Pinnacle** — the sharper book, and the one where
+     drift would actually mean sharp money. The plausible story is that a soft
+     book's opening error is partly predictable while a sharp book's is not,
+     which is coherent but is precisely the signal that decays as a book tightens.
+  2. **Latency kills most of it.** football-data's "opening" is the market open;
+     this system bets the night before kickoff, by which time most of the move
+     has already happened. Part A is an upper bound on a window we do not have.
+  3. **Scale.** +0.72% CLV against a three-way margin of ~6.3% at B365's
+     overround. CLV is measured devigged on both sides, so it does not pay for
+     the margin — it would need to exceed it.
+  4. The strategy's realised flat ROI is **−9.9%** with a 36.5% hit rate.
+
+  **C. The production model leans against the market**, confirming E0's negative
+  CLV from the other direction — recorded in the JSON artifact.
+
+  **Verdict**: stage 2 (second odds snapshot near kickoff) is NOT justified. It
+  is a scraper plus a new late-refresh prediction path, for a signal that is
+  book-specific, an order of magnitude under the margin, and measured on a time
+  window wider than the one we could trade.
+- [ ] **E3 — RPS-aligned custom objective.**
+  *Hypothesis*: multi-logloss ignores ordinality.
+  *Implementation*: custom XGBoost objective;
+  `RPS = (1/(r−1)) Σ(cumP_i − cumY_i)²` is squared error on cumulative
+  probabilities, so gradient/Hessian are analytic through the softmax.
+  *Success*: ΔRPS ≥ −0.0025 (1.2%) with **no** discrimination loss (accuracy and
+  OvR AUC must not fall — same guard the calibration validator uses).
+  *Prior*: improves RPS modestly, produces **zero** edge — the model already
+  matches the market's spread; a better-shaped loss refines shape, not
+  information. Metric hygiene, and mandatory if Asian handicap is ever priced.
+- [ ] **E4 — GBDT × Dixon-Coles hybrid (Karlis-Ntzoufras).** **Justified only
+  for derivative markets, not for 1X2.** D3 already refuted the coherence
+  premise: the joint bivariate-Poisson fit residual across the production 1X2
+  and O/U heads is mean 0.011 RMS, 0% of matches >5pp — the heads are already
+  coherent. Build only to open AH / BTTS / correct-score, via `model_registry`.
+  *Success*: per-market, not global — can AH/BTTS be priced with calibrated
+  probabilities; 1X2 RPS must not regress >0.5%.
+- [ ] **E5 — Multi-paradigm stacked ensemble. LOWEST VALUE — read before
+  starting.** The stacking test in `experiment_odds_free.py` already answers what
+  an NNLS meta-learner would ask: the optimal weight on the model given the price
+  is **negative** (−9% on 1X2). A simplex constraint (`w ≥ 0, Σw = 1`) cannot
+  express that — it would just put ~all weight on the market prior. The
+  diversity criterion also predicts failure: five estimators trained on the same
+  56 features, of which the price is dominant, will have residual correlations
+  well above the 0.70 threshold. The one genuinely decorrelated member is DC
+  (it cannot see odds) and the odds-free arm tested **worse** (Brier 0.6013 →
+  0.6108, +1.6%) with its disagreements confirmed as noise. Ensembling reduces
+  variance; the problem is not variance.
+  *If run anyway, run it cheaply*: build the OOF matrix for XGBoost +
+  ElasticNet + ExtraTrees only (~1 day from `benchmark_models.py`) and check the
+  residual correlation matrix **before** building CatBoost/AdaBoost/DC. If
+  correlations exceed 0.90 as expected, stop — a one-day kill, not a multi-week one.
+
+### Validation ladder (applies to all of the above)
+
+| gate | test | threshold | cost |
+| ---: | --- | --- | --- |
+| 0 | nats added over **Pinnacle closing** (stacked logit) | > +0.005 | minutes |
+| 1 | ΔRPS vs PSC, cross-fitted | ≥ 0.6% better | minutes |
+| 2 | mean CLV vs PSC, bootstrap CI excluding 0 | > 0 | hours |
+| 3 | flat-stake ROI, OOF, real prices | > 0 after vig | hours |
+| 4 | forward paper-trade, pre-registered params | ≥ 1,000 bets | months |
+| 5 | fractional Kelly, live | — | — |
+
+**CLV blueprint**: `CLV_log = log(odds_taken) − log(odds_close)` is the headline
+(additive across bets, far better behaved than the ratio). Devig both sides with
+the same method. Same bookmaker for take and close, or model the cross-book
+basis explicitly. CLV is necessary, not sufficient — positive CLV with negative
+ROI is variance; negative CLV with positive ROI will regress.
+
+**Sample sizes**: with per-bet return sd ≈ 1.0, detecting a true edge `e` at 80%
+power needs `n ≈ 8/e²` — +1% ⇒ ~80,000 bets, +2% ⇒ ~20,000, +3% ⇒ ~9,000,
++5% ⇒ ~3,200. The 2,606 settled bets to date can only detect ±5.5%, which is why
+overall ROI sits at −3.6% CI [−8.4, +1.1] and conviction at +4.9% CI [−3.1, +12.7].
+**At current volume ROI is not a usable model-selection signal** — which is the
+structural reason to make CLV primary: it is measurable per-bet at far lower
+variance, so ~500–1,000 bets gives a usable read where ROI needs 20,000. Kelly
+only after gate 4, quarter-Kelly at most; the current Option-B sizing is already
+more conservative than Kelly and should stay until an edge clears gate 4.
+
 ## Future analysis ideas (not yet scoped)
 
 - **"Place bet now?" shortcut on live rows** — when a live match has no open bet, show a one-click action that takes you to `/football/auto_wager` (or a future bet-placement modal) pre-filtered to that match. Useful for value-discovery on in-progress games where the score state has shifted the EV. Caveat: couples live analytical view with virtual betting action; needs design before building. Revisit when /auto_wager UI is generalised enough to accept a per-match filter.
