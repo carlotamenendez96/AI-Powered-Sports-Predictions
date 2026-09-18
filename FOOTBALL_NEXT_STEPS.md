@@ -354,7 +354,25 @@ Operator ask (2026-05-27): explore `soccerdata`'s **FBref** scraper to fetch his
 
 **Required steps if pursued:** (a) register target competitions in `league_dict.json`; (b) headless rate-limited fetcher (FBref/StatsBomb throttles hard); (c) **ETL adapter** FBref schedule/results → the MatchHistory CSV schema `data_loader` expects (column rename + the gate-1 odds decision); (d) entity resolution FBref names ↔ `team_mappings.json`; (e) OOF-validate any new feature/competition on the existing Brier harness before deploying. xG window caveat: FBref xG is reliable only ~2017+, so an xG feature shrinks the training window or needs pre-2017 imputation.
 
-**Lean:** start with gate-2(ii) — pull FBref **xG for matches we already have** and OOF-test it as a feature — before any attempt to ingest whole new competitions. Lowest friction; directly tests the one signal that might not be dead.
+**Lean:** start with gate-2(ii) — pull **xG for matches we already have** and OOF-test it as a feature — before any attempt to ingest whole new competitions. Lowest friction; directly tests the one signal that might not be dead.
+
+##### D5 gate-2(ii) — historical-xG-as-a-feature probe (scoped 2026-05-27; salvaged onto main 2026-09-18)
+
+**Source is Understat, not FBref** — plain HTTP (no Selenium, no Cloudflare), xG-native, and FBref's only advantage (broader coverage) is irrelevant because the test is Big-5-only regardless.
+
+**X0 — probe: DONE.** `scripts/d5_xg/probe_understat.py` (read-only, reproducible; `shape` and `join` subcommands):
+- **Data shape**: `Understat.read_schedule()` already carries match-level `home_xg` / `away_xg` beside `date, home_team, away_team, home_goals, away_goals, is_result` — the whole signal in **one plain-HTTP call per league-season**. The heavier `read_team_match_stats` is not needed.
+- **Coverage**: Big-5 top flights (+ RFPL), xG window ~2014/15+, so the feature is NaN across the 2010–2014 slice of the corpus.
+- **Name join — solved**: 100% on EPL 23/24 (20/20 at WRatio ≥ 80) joining Understat's full names to the corpus's short ones (Manchester City → Man City 86, Nott'm Forest 80, Wolves 82). Keep the match **within-league** — the D6 lesson is that a naive global fuzzy produces cross-league false matches.
+
+**X1–X3 (fetch → leakage-free rolling xG features → OOF gate ≥1% Brier → wire in) were never built, and the 2026-09-18 E programme argues against building them.** The original prior was already "low"; it is now lower, for three reasons:
+1. **The coverage caveat became the whole problem.** Big-5 are the *most efficient* markets, and E0 showed the model fails to beat even the soft **opening** price there (model RPS 0.20472 vs opening 0.20374 vs closing 0.20277), let alone the close.
+2. **The ≥1% Brier gate is the bar H2H and L10/L15 missed by orders of magnitude** (H2H 1X2: −0.001%).
+3. **xG is public and the market prices it.** E1 established that *given the price*, this feature set says nothing about what the price got wrong — and that was tested natively, with `base_margin`, not just post-hoc.
+
+xG is genuinely **not** derived from the price, so it is not formally closed by those results — it is the one "maybe" still standing. But it is now a worse bet than when it was scoped, and it should not be picked up as an edge play. If ever run, it needs the placebo discipline the E programme adopted: a width-matched shuffled-feature arm, or the apparent result cannot be trusted.
+
+**What is on main**: the probe script only. The branch also carried a `NEXT_STEPS.md` edit, but that file has since been split per-sport and no longer exists — its content is this section.
 
 #### D6 — ClubElo as the ELO source (better/cross-league ratings via soccerdata; NOT scheduled — exploration)
 
