@@ -725,13 +725,60 @@ placebo *outscored* the real block. `scripts/experiment_h2h.py` has the pattern.
   E3 has zero edge implication either way, defer it until Asian-handicap pricing
   is actually on the table — at which point re-tune first, and expect to fight
   the non-convexity.
-- [ ] **E4 — GBDT × Dixon-Coles hybrid (Karlis-Ntzoufras).** **Justified only
-  for derivative markets, not for 1X2.** D3 already refuted the coherence
-  premise: the joint bivariate-Poisson fit residual across the production 1X2
-  and O/U heads is mean 0.011 RMS, 0% of matches >5pp — the heads are already
-  coherent. Build only to open AH / BTTS / correct-score, via `model_registry`.
-  *Success*: per-market, not global — can AH/BTTS be priced with calibrated
-  probabilities; 1X2 RPS must not regress >0.5%.
+- [x] **E4 — GBDT × Dixon-Coles hybrid (Karlis-Ntzoufras). DONE 2026-09-18 —
+  the machinery works and is verified; the PRICES are not good enough to trade.**
+  `scripts/experiment_dc_hybrid.py`, 14,083 rows. Two XGBoost Poisson regressors
+  predict λ_home (target `FTHG`) and λ_away (target `FTAG`) from the full
+  production feature set — so unlike native DC it keeps ELO, form and the odds —
+  then a per-fold MLE `ρ` corrects the four low-score cells and the scoreline
+  matrix yields every market at once.
+
+  **The implementation is sound.** `ρ` per fold: −0.1155, −0.0741, −0.0388,
+  −0.0322, −0.0384, mean **−0.0598** — the classic Dixon-Coles sign and roughly
+  the 1997 paper's magnitude. The vectorised scoreline matches
+  `dc_scoreline.scoreline_matrix` to **8.3e-17** (checked every run), AH at −0.5
+  reproduces P(home win) exactly and +0.5 reproduces P(home)+P(draw), and
+  `fit_rho` returns ~0 on independent-Poisson data rather than inventing a
+  correction. So the negatives below are about football, not about the code.
+
+  **1X2 guard: FAILS.** RPS 0.20648 vs production 0.20472 = **+0.86%**
+  regression against a ≤0.5% gate; accuracy 49.79% vs 50.38%. Routing 1X2
+  through a Poisson scoreline imposes a parametric constraint a direct
+  multiclass head does not carry, and it costs real quality. O/U is marginally
+  worse too (Brier 0.24835 vs 0.24795).
+
+  **Asian handicap — it prices, but not honestly.** 2,916 half-line rows (of
+  11,702 with any AH line; integer lines can push and quarter lines split the
+  stake, so only half-lines have an unambiguous binary outcome to score against).
+  The market wins on both Brier (0.24979 vs 0.25236) and logloss, and the
+  reliability table shows over-spread probabilities at both ends:
+
+  | bin | n | predicted | actual |
+  | --- | ---: | ---: | ---: |
+  | 0.3–0.4 | 240 | 36.9% | 45.4% |
+  | 0.4–0.5 | 1,532 | 45.6% | 48.8% |
+  | 0.5–0.6 | 969 | 53.6% | 50.6% |
+  | 0.6–0.7 | 148 | 63.4% | **45.3%** |
+
+  **The one positive signal died under its error bar — again.** AH produced the
+  first positive stacked blend weight of the whole programme, **+26%** (vs −8%
+  to −27% everywhere else), with nats +0.00028, the largest positive measured
+  today. Bootstrapped over 2,916 rows: blend weight CI **[−210%, +160%]**, nats
+  CI **[+0.00000, +0.00169]**. Includes zero, enormously wide, not a finding.
+  That is the fourth time today a headline positive evaporated under a control
+  or a CI (H2H gain share, E0's odds ladder, E1's apparent gain, this).
+
+  **BTTS**: systematically biased low — predicted mean 50.7% against an actual
+  53.8% — and compressed the same way (0.3–0.4 bin predicts 36.9%, delivers
+  48.3%). **Correct score**: logloss 2.888 over the 11×11 grid, top-1 hit rate
+  12.96%, and it picks the *same* most-likely scoreline on 68.9% of matches.
+
+  **Verdict**: do not deploy as the 1X2/O/U path — it is strictly worse there.
+  The architecture is right for derivative markets and the plumbing now exists
+  and is verified, but the outputs need (a) per-market calibration before any of
+  them could be traded, (b) a larger half-line sample than the feature-dropna
+  leaves, and (c) per-league λ treatment. Revisit only as a **product** decision
+  to trade AH/BTTS, never as an edge play — E0/E1/E5 already settled that.
 - [x] **E5 — Multi-paradigm stacked ensemble. DONE 2026-09-18 — KILLED ON ITS
   OWN DIVERSITY GATE, in one run.** `scripts/experiment_ensemble.py`, 14,083
   rows, six Level-0 models out-of-fold.
