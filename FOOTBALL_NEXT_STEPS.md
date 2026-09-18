@@ -573,17 +573,51 @@ placebo *outscored* the real block. `scripts/experiment_h2h.py` has the pattern.
   **Consequence for the ladder**: gates 1–5 are unreachable for the current
   stack. E1 remains worth running as the clean null (~2 days); E2 stage 1 is
   now the only test in the program targeting information the price lacks.
-- [ ] **E1 — Residual model against the market.**
-  *Hypothesis*: train on what the market gets wrong rather than hoping
-  disagreement is useful.
-  *Implementation*: `logit(P_market)` as XGBoost `base_margin` so the model
-  learns only the correction; features = current 56 minus `B365*`/`IP_*`.
-  *Control*: current model stacked post-hoc. *Variant*: native base_margin.
-  *Success*: nats added over market > +0.005 (100× today's +0.00000);
-  ΔRPS ≥ −0.0012; CLV > 0.
-  *Prior*: near-zero — `corr(deviation, residual) = −0.003` and the stacked
-  blend weight on the model is **negative**. Worth ~2 days as the clean null,
-  and `base_margin` is worth having in the codebase regardless.
+- [x] **E1 — Residual model against the market. DONE 2026-09-18 — no gate passed,
+  but it produced the cleanest null of the programme.**
+  `scripts/experiment_residual.py`, 14,083 rows. Formulation: with
+  `multi:softprob`, set `base_margin = log(devigged market probability)`, so the
+  output is `softmax(log p + f)` and the trees learn ONLY the log-correction `f`.
+  `f = 0` reproduces the market exactly. This asks natively, with 827 trees and
+  the full feature set, what the stacked test asks post-hoc with one parameter.
+
+  **Positive control first**: on synthetic data with a correction of known size
+  injected over a synthetic market, the method recovers it (logloss 1.0270 →
+  0.8238). So a null on real data is a finding, not a silent bug. The script
+  aborts if this ever fails.
+
+  | arm | feat | RPS | ΔRPS vs mkt | Brier | nats/mkt | \|corr\| | CLV |
+  | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+  | market baseline | — | 0.20347 | — | 0.59848 | — | — | — |
+  | control (production) | 59 | 0.20472 | +0.00125 | 0.60120 | +0.00002 | 0.0213 | −0.169% |
+  | residual_no_odds | 53 | 0.20401 | +0.00054 | 0.59940 | +0.00006 | 0.0127 | −0.064% |
+  | residual_with_odds | 59 | 0.20397 | +0.00051 | 0.59933 | +0.00005 | 0.0130 | −0.054% |
+  | **residual_placebo** | 59 | **0.20407** | **+0.00060** | **0.59972** | **+0.00004** | **0.0110** | **−0.097%** |
+
+  **The residual formulation genuinely beats the production control** — RPS
+  0.20401 vs 0.20472, Brier 0.59940 vs 0.60120, CLV −0.064% vs −0.169%, and it
+  halves how far the model wanders from the price (mean |correction| 0.013 vs
+  0.021). That is a real improvement and it is worth knowing.
+
+  **But the shuffled placebo matches it.** RPS 0.20407 against the real arms'
+  0.20401 / 0.20397; nats +0.00004 against +0.00006 / +0.00005; CLV −0.097%
+  against −0.064% / −0.054%, every CI overlapping and every CI containing zero.
+  So the entire gain over the control comes from **anchoring to the price** —
+  being forced to start at the market and shrink toward it — and **none of it
+  from the features**. The residual formulation is a better-behaved way of being
+  a worse-than-market model.
+
+  No arm passes any gate: nats are ~100× below +0.005, every CLV is negative,
+  and no arm beats the market's RPS at all (ΔRPS is positive for all four).
+  Note the blend weight on the model goes **more** negative under the residual
+  formulation (−24 to −27% vs the control's −8%), which is the stacked test
+  saying the same thing a third way.
+
+  **Conclusion**: given the price, these features say nothing about what the
+  price got wrong. That is now established three independent ways — post-hoc
+  stacking (experiment_odds_free), CLV against the close (E0), and natively via
+  base_margin (here). The `base_margin` seam is kept in the script as the
+  correct formulation for any future feature set worth testing.
 - [x] **E2 stage 1 — line movement (open → close). DONE 2026-09-18 — DO NOT BUILD
   STAGE 2.** `scripts/experiment_drift.py`, same-book throughout, both books run
   as a replication check (B365 n=54,076, overround 1.0677→1.0671; Pinnacle
