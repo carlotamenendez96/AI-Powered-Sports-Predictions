@@ -732,21 +732,65 @@ placebo *outscored* the real block. `scripts/experiment_h2h.py` has the pattern.
   coherent. Build only to open AH / BTTS / correct-score, via `model_registry`.
   *Success*: per-market, not global — can AH/BTTS be priced with calibrated
   probabilities; 1X2 RPS must not regress >0.5%.
-- [ ] **E5 — Multi-paradigm stacked ensemble. LOWEST VALUE — read before
-  starting.** The stacking test in `experiment_odds_free.py` already answers what
-  an NNLS meta-learner would ask: the optimal weight on the model given the price
-  is **negative** (−9% on 1X2). A simplex constraint (`w ≥ 0, Σw = 1`) cannot
-  express that — it would just put ~all weight on the market prior. The
-  diversity criterion also predicts failure: five estimators trained on the same
-  56 features, of which the price is dominant, will have residual correlations
-  well above the 0.70 threshold. The one genuinely decorrelated member is DC
-  (it cannot see odds) and the odds-free arm tested **worse** (Brier 0.6013 →
-  0.6108, +1.6%) with its disagreements confirmed as noise. Ensembling reduces
-  variance; the problem is not variance.
-  *If run anyway, run it cheaply*: build the OOF matrix for XGBoost +
-  ElasticNet + ExtraTrees only (~1 day from `benchmark_models.py`) and check the
-  residual correlation matrix **before** building CatBoost/AdaBoost/DC. If
-  correlations exceed 0.90 as expected, stop — a one-day kill, not a multi-week one.
+- [x] **E5 — Multi-paradigm stacked ensemble. DONE 2026-09-18 — KILLED ON ITS
+  OWN DIVERSITY GATE, in one run.** `scripts/experiment_ensemble.py`, 14,083
+  rows, six Level-0 models out-of-fold.
+
+  | model | feat | RPS | Brier | acc | fit s |
+  | --- | ---: | ---: | ---: | ---: | ---: |
+  | xgboost (control) | 59 | 0.20472 | 0.60120 | 50.38% | 6.5 |
+  | extratrees | 58 | 0.20474 | 0.60125 | 50.15% | 2.8 |
+  | randomforest | 58 | 0.20566 | 0.60402 | 50.18% | 4.0 |
+  | adaboost | 58 | 0.21767 | 0.62990 | 50.51% | 62.2 |
+  | elasticnet_lr | 58 | 0.20525 | 0.60346 | 49.79% | 7.6 |
+  | xgboost_oddsfree *(DC proxy)* | 53 | 0.20941 | 0.61096 | 49.20% | 6.5 |
+  | **MARKET** | — | **0.20347** | **0.59848** | — | — |
+
+  **The kill gate fails 15/15.** Pairwise residual correlation runs **0.9690 to
+  0.9979** against a threshold of 0.70 — not one pair is close. Dixon-Coles was
+  never built, exactly as the cheap-kill plan intended; the odds-free booster
+  standing in for its "blind to the price" role is *itself* 0.9941 correlated
+  with production XGBoost on residuals.
+
+  **A nuance worth keeping.** Correlation of *deviation from the market* is much
+  lower — **−0.218 to +0.753**, several pairs near zero or negative. So the
+  models genuinely do disagree with the price in different directions. That
+  diversity is useless because the deviations are noise (E0/E1:
+  corr(deviation, outcome residual) ≈ 0). Averaging independent noise cancels
+  it, which moves the blend **toward the price** — real improvement, zero
+  information. Diversity of noise is not useful diversity, and the residual
+  correlation is the view that shows it.
+
+  **Level-1 weights are the decisive result:**
+
+  ```
+  nnls_simplex       xgboost 0.370  extratrees 0.357  elasticnet 0.273  (rest 0.000)
+  nnls_with_market   MARKET 0.834   elasticnet 0.124  extratrees 0.041
+                     randomforest 0.002   xgboost 0.000   adaboost 0.000   oddsfree 0.000
+  ```
+
+  Offered the market as a candidate, the cross-fit meta-learner puts **83.4% on
+  the price and 0.000 on the production model**. The whole six-model zoo
+  collectively retains 16.6%.
+
+  | arm | RPS | Brier | ΔRPS% | ΔBrier% | nats/mkt | CLV |
+  | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+  | soft_vote | 0.20525 | 0.60224 | +0.26% | +0.17% | −0.00000 | −0.104% |
+  | nnls_simplex | 0.20426 | 0.60019 | −0.22% | −0.17% | +0.00000 | −0.082% |
+  | nnls_with_market | 0.20369 | 0.59866 | −0.50% | −0.42% | +0.00003 | −0.034% |
+  | control_xgboost | 0.20472 | 0.60120 | — | — | +0.00002 | −0.169% |
+  | market | 0.20374 | 0.59870 | −0.48% | −0.42% | −0.00000 | −0.028% |
+
+  Nothing reaches the −1.2% improvement gate (best −0.50%), every CLV is
+  negative, and `nnls_with_market` beats the market alone by 0.02% — i.e. it
+  *is* the market. Soft voting is worse than the control, as the proposal
+  predicted.
+
+  **Correction to the pre-registered prediction**: the review said the zoo would
+  get "weight near zero". It got 16.6%, and the survivor was the **linear
+  anchor** (elasticnet 0.124) rather than any booster — XGBoost, AdaBoost and
+  the odds-free proxy all went to exactly 0.000. The direction was right, the
+  detail was not.
 
 ### Validation ladder (applies to all of the above)
 
