@@ -83,7 +83,12 @@ def load_settled_bets(since=None):
                 continue
             ev, conf = _f(b.get('ev')), _f(b.get('conf'))
             odds = _f(b.get('odds') if b.get('odds') is not None else b.get('odd'))
-            stake, pnl = _f(b.get('stake')), _f(b.get('pnl'))
+            stake = _f(b.get('stake'))
+            # `profit` is the backward-compatible alias and is present on every
+            # settled bet; `pnl` is absent on the oldest slips. Reading only
+            # `pnl` silently dropped those rows at the filter below (36 of
+            # 2,606 as of 2026-09-18) — they are real settled bets.
+            pnl = _f(b.get('pnl')) if b.get('pnl') is not None else _f(b.get('profit'))
             if None in (odds, stake, pnl) or stake <= 0:
                 continue
             rows.append({
