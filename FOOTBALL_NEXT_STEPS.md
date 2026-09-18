@@ -676,16 +676,55 @@ placebo *outscored* the real block. `scripts/experiment_h2h.py` has the pattern.
   is a scraper plus a new late-refresh prediction path, for a signal that is
   book-specific, an order of magnitude under the margin, and measured on a time
   window wider than the one we could trade.
-- [ ] **E3 — RPS-aligned custom objective.**
-  *Hypothesis*: multi-logloss ignores ordinality.
-  *Implementation*: custom XGBoost objective;
-  `RPS = (1/(r−1)) Σ(cumP_i − cumY_i)²` is squared error on cumulative
-  probabilities, so gradient/Hessian are analytic through the softmax.
-  *Success*: ΔRPS ≥ −0.0025 (1.2%) with **no** discrimination loss (accuracy and
-  OvR AUC must not fall — same guard the calibration validator uses).
-  *Prior*: improves RPS modestly, produces **zero** edge — the model already
-  matches the market's spread; a better-shaped loss refines shape, not
-  information. Metric hygiene, and mandatory if Asian handicap is ever priced.
+- [x] **E3 — RPS-aligned custom objective. DONE 2026-09-18 — FAILED, and the
+  stated prior was wrong.** `scripts/experiment_rps.py`, 14,083 rows.
+
+  The objective is derived, not borrowed: `RPS = 1/(K−1) Σ(cumP_i − cumY_i)²` is
+  squared error on cumulative probabilities, so `dL/dp_k = Σ_{i≥k} e_i` and the
+  softmax Jacobian gives `dL/dz_k = p_k(dL/dp_k − Σ_j p_j dL/dp_j)`, with a
+  Gauss-Newton Hessian `h_k = Σ_i (dc_i/dz_k)²`. Verified every run against a
+  numerical derivative (max error **1.07e-10**) and verified to lower RPS on a
+  synthetic ordinal problem (0.09139 → 0.08229). The script aborts if either
+  check fails.
+
+  **Two configs, because one would have been rigged.** `min_child_weight`
+  thresholds the SUM OF HESSIANS in a node, and the two objectives have very
+  different Hessian scales, so running the RPS arm under the logloss-tuned
+  `min_child_weight=7` would measure regularisation, not the objective.
+
+  | config | arm | RPS | Brier | acc | OvR-AUC | meanHess | nats/mkt | CLV |
+  | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+  | market | — | 0.20347 | 0.59848 | 50.61% | 0.6493 | — | — | — |
+  | tuned | logloss | 0.20472 | 0.60120 | 50.38% | 0.6422 | 0.4038 | +0.00002 | −0.169% |
+  | tuned | rps | 0.20487 | 0.60154 | **50.57%** | **0.6440** | 0.0471 | +0.00001 | −0.163% |
+  | neutral | logloss | 0.21095 | 0.61929 | 48.42% | 0.6262 | 0.3564 | +0.00008 | −0.067% |
+  | neutral | rps | 0.21727 | 0.63641 | 47.54% | 0.6121 | 0.0356 | +0.00007 | −0.175% |
+
+  **ΔRPS is +0.00015 (+0.07%) tuned and +0.00632 (+3.00%) neutral — the RPS
+  objective makes RPS WORSE in both**, against a gate of ≤ −0.0025. The
+  discrimination guard passes under tuned params (accuracy +0.19pp, OvR-AUC
+  +0.0018 — it ranks marginally *better* while calibrating marginally worse on
+  the cumulative scale) and fails under neutral (−0.88pp, −0.0142).
+
+  **Root cause is structural, not an implementation slip.** Comparing the
+  Gauss-Newton Hessian against a numerically-computed true diagonal Hessian:
+  **34.8% of true entries are NEGATIVE** — RPS composed with softmax is
+  genuinely non-convex in margin space, so XGBoost's Newton step has no reliable
+  curvature to work with. Gauss-Newton is the standard remedy (it guarantees
+  positivity) but correlates only **+0.61** with true curvature, median ratio
+  0.707, and is **9.4× smaller** than the logloss Hessian — which is also why
+  Hessian-scaled hyperparameters do not transfer between the two objectives.
+  Any implementation faces this; it is a property of the loss.
+
+  **The prior's second half held exactly**: nats over market ~0 and CLV negative
+  in all four arms. Loss shape changes nothing about edge, as predicted. Only
+  the "improves RPS modestly" half was wrong.
+
+  **Honest limitation**: hyperparameters were never re-tuned FOR the RPS
+  objective (~30–60 min of grid search). A fully fair test would do that. Given
+  E3 has zero edge implication either way, defer it until Asian-handicap pricing
+  is actually on the table — at which point re-tune first, and expect to fight
+  the non-convexity.
 - [ ] **E4 — GBDT × Dixon-Coles hybrid (Karlis-Ntzoufras).** **Justified only
   for derivative markets, not for 1X2.** D3 already refuted the coherence
   premise: the joint bivariate-Poisson fit residual across the production 1X2
