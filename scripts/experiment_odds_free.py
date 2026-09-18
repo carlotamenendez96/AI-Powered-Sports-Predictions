@@ -111,17 +111,35 @@ def feature_list(head, arm, spec):
     return feats
 
 
-def oof_predictions(df, head, arm, n_splits=5):
-    """Out-of-fold model probabilities, aligned with market + outcome."""
+def oof_predictions(df, head, arm, n_splits=5, feats=None,
+                    dropna_on=None, carry=()):
+    """Out-of-fold model probabilities, aligned with market + outcome.
+
+    `feats` overrides the arm's feature list, so another experiment can reuse
+    this loop to A/B a feature set instead of the odds/odds-free arms.
+
+    `dropna_on` overrides which feature columns a row must have to be scored.
+    It defaults to all of `feats`, which is right when every feature is dense,
+    but a feature that is legitimately NaN for some rows (a first-ever meeting
+    has no head-to-head record) would otherwise delete those rows from one arm
+    and not the other, and the arms would no longer be scored on the same
+    matches. Pass the dense subset to keep them aligned; XGBoost takes the
+    NaNs natively.
+
+    `carry` names extra columns to pass through onto the OOF frame, for
+    slicing the result afterwards.
+    """
     spec = get_spec(head, 'xgboost')
-    feats = feature_list(head, arm, spec)
+    feats = list(feats) if feats is not None else feature_list(head, arm, spec)
 
     target = 'target_1x2' if head == '1x2' else 'total_goals'
     market_cols = ['mkt_H', 'mkt_D', 'mkt_A'] if head == '1x2' else ['mkt_over']
     odds_cols = (['B365H', 'B365D', 'B365A'] if head == '1x2'
                  else ['ou_over_odds', 'ou_under_odds'])
 
-    need = feats + [target] + market_cols + odds_cols
+    dense = list(feats) if dropna_on is None else list(dropna_on)
+    need = dense + [target] + market_cols + odds_cols
+    carry = [c for c in carry if c in df.columns]
     d = df.dropna(subset=need).copy().sort_values('date')
     if spec.uses_categorical and 'league_cat' in d.columns:
         d['league_cat'] = d['league_cat'].astype('category')
@@ -135,7 +153,7 @@ def oof_predictions(df, head, arm, n_splits=5):
         model = spec.build()
         model.fit(cv_train[feats], cv_train[target])
 
-        out = cv_test[market_cols + odds_cols + ['date', 'league']].copy()
+        out = cv_test[market_cols + odds_cols + ['date', 'league'] + carry].copy()
         if head == '1x2':
             p = model.predict_proba(cv_test[feats])
             out[['p_H', 'p_D', 'p_A']] = p

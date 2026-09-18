@@ -22,6 +22,86 @@ warnings.simplefilter(action='ignore', category=FutureWarning)
 # heuristic references them. Keep it.
 FORM_WINDOWS = ((5, ''), (10, '_l10'), (15, '_l15'))
 
+# Head-to-head: how many prior meetings between the same two teams feed the
+# h2h_* features. Like FORM_WINDOWS this is the single source of truth for
+# both sides — training builds the columns in `_add_h2h_features`, and
+# `predict_matches.get_h2h_stats` derives them at serve time from the same
+# MatchHistory corpus through the same `h2h_features()` helper below.
+#
+# 5 rather than the 2-3 FEATURE_ENGINEERING_IDEAS 1.6 suggested: the corpus
+# runs from 2010, so 89% of rows have at least one prior meeting and 56% have
+# five. A wider window is less noisy and costs no coverage.
+H2H_WINDOW = 5
+
+# Emitted by `h2h_features`, in the order the model sees them. `_n` columns
+# count the meetings actually used, so the model can discount a thin sample
+# instead of confusing "no history" with "a bad record".
+H2H_FEATURES = (
+    'h2h_n', 'h2h_pts', 'h2h_gd', 'h2h_goals', 'h2h_draw_rate', 'h2h_ou_rate',
+    'h2h_venue_n', 'h2h_venue_pts', 'h2h_venue_goals',
+)
+
+
+def h2h_features(meetings, home_team, window=H2H_WINDOW):
+    """H2H features for one fixture, oriented to `home_team`.
+
+    `meetings` is every prior meeting between the two teams as
+    `(meeting_home_team, FTHG, FTAG)`, oldest first, ALREADY filtered to
+    strictly before the fixture date — the caller owns the leakage guard.
+    Orientation is by `home_team`, so `h2h_pts` is the points *this* fixture's
+    home side took in those meetings regardless of who hosted them.
+
+    The averages are NaN when no usable meeting exists rather than 0: XGBoost
+    learns a split direction for NaN, whereas a 0 would read as "lost every
+    previous meeting". The `_n` counts stay numeric (0) for the same reason.
+
+    `h2h_venue_*` restricts to meetings at this same venue (`home_team`
+    hosting), which is where a "this fixture is always tight" effect would
+    live if one exists.
+    """
+    out = {c: float('nan') for c in H2H_FEATURES}
+    out['h2h_n'] = 0
+    out['h2h_venue_n'] = 0
+    if not meetings:
+        return out
+
+    def summarise(subset):
+        pts, gd, total, draws, overs = [], [], [], [], []
+        for meeting_home, hg, ag in subset:
+            # Guard unplayed/unparsed rows: FTHG/FTAG are coerced to NaN by
+            # DataLoader when the source CSV cell is blank.
+            if hg is None or ag is None or hg != hg or ag != ag:
+                continue
+            gf, ga = (hg, ag) if meeting_home == home_team else (ag, hg)
+            pts.append(3 if gf > ga else (1 if gf == ga else 0))
+            gd.append(gf - ga)
+            total.append(hg + ag)
+            draws.append(1 if gf == ga else 0)
+            overs.append(1 if hg + ag > 2.5 else 0)
+        return pts, gd, total, draws, overs
+
+    pts, gd, total, draws, overs = summarise(meetings[-window:])
+    if pts:
+        out['h2h_n'] = len(pts)
+        out['h2h_pts'] = float(np.mean(pts))
+        out['h2h_gd'] = float(np.mean(gd))
+        out['h2h_goals'] = float(np.mean(total))
+        out['h2h_draw_rate'] = float(np.mean(draws))
+        out['h2h_ou_rate'] = float(np.mean(overs))
+
+    # Venue-matched subset is taken from the FULL history then windowed, not
+    # from the window above — otherwise a 5-meeting window yields ~2 venue
+    # samples and the column is mostly noise.
+    venue = [m for m in meetings if m[0] == home_team][-window:]
+    v_pts, _v_gd, v_total, _v_draws, _v_overs = summarise(venue)
+    if v_pts:
+        out['h2h_venue_n'] = len(v_pts)
+        out['h2h_venue_pts'] = float(np.mean(v_pts))
+        out['h2h_venue_goals'] = float(np.mean(v_total))
+
+    return out
+
+
 class FeatureEngineer:
     def __init__(self):
         pass
@@ -176,6 +256,9 @@ class FeatureEngineer:
             if short_c in df.columns and long_c in df.columns:
                 df[f'{side}_form_trend'] = df[short_c] - df[long_c]
 
+        # 4c. Head-to-head record between these two specific teams.
+        df = self._add_h2h_features(df)
+
         # 5. Specific Home/Away Form
         df = self._calculate_specific_home_away(df)
 
@@ -284,6 +367,66 @@ class FeatureEngineer:
             for cols in store.values():
                 for k, v in cols.items():
                     df[k] = v
+
+        return df
+
+    def _add_h2h_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Adds the h2h_* columns: the record between these two specific teams.
+
+        Walks the frame in date order accumulating a per-pair meeting list, so
+        each row is scored against the meetings that precede it and nothing
+        else. Rows sharing a date are scored as a block *before* any of them is
+        appended, so same-day fixtures can never see each other — the strict
+        `<` that `_calculate_rolling_multi` gets from its date filter.
+
+        Pairs are unordered (`Arsenal v Spurs` and `Spurs v Arsenal` are the
+        same pair); `h2h_features` re-orients each meeting to the row's home
+        team, and the venue-matched columns carry the ordering that matters.
+
+        O(n) over the frame, against the O(n·team-history) date filter the
+        rolling-form pass does, so this is a small fraction of prepare_data().
+        """
+        required = {'date', 'home_team', 'away_team', 'FTHG', 'FTAG'}
+        if not required.issubset(df.columns):
+            return df
+
+        n = len(df)
+        arrays = {c: np.full(n, np.nan) for c in H2H_FEATURES}
+        dates = df['date'].values
+        homes = df['home_team'].values
+        aways = df['away_team'].values
+        fthg = df['FTHG'].values
+        ftag = df['FTAG'].values
+
+        order = np.argsort(dates, kind='stable')
+        history = {}
+
+        i = 0
+        while i < n:
+            j = i
+            while j < n and dates[order[j]] == dates[order[i]]:
+                j += 1
+
+            # Score the whole day off history that predates it ...
+            for k in range(i, j):
+                pos = order[k]
+                home, away = homes[pos], aways[pos]
+                pair = (home, away) if home <= away else (away, home)
+                feats = h2h_features(history.get(pair, ()), home)
+                for c in H2H_FEATURES:
+                    arrays[c][pos] = feats[c]
+
+            # ... then fold the day into the history for later dates.
+            for k in range(i, j):
+                pos = order[k]
+                home, away = homes[pos], aways[pos]
+                pair = (home, away) if home <= away else (away, home)
+                history.setdefault(pair, []).append((home, fthg[pos], ftag[pos]))
+
+            i = j
+
+        for c in H2H_FEATURES:
+            df[c] = arrays[c]
 
         return df
 

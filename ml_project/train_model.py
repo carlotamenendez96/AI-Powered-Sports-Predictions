@@ -7,7 +7,7 @@ import json
 import os
 import gc
 from data_loader import DataLoader
-from feature_engineering import FeatureEngineer
+from feature_engineering import FeatureEngineer, H2H_FEATURES
 from model_registry import get_spec, save_meta
 import feature_engineering
 print(f"DEBUG: Loaded feature_engineering from {feature_engineering.__file__}")
@@ -57,6 +57,16 @@ class ModelTrainer:
             # already in the columns above; these give the model the delta
             # directly rather than making it learn a subtraction.
             'H_form_trend', 'A_form_trend',
+
+            # NOTE: the nine h2h_* columns are deliberately NOT here. They are
+            # still built by FeatureEngineer._add_h2h_features and mirrored at
+            # serve time by predict_matches.get_h2h_stats, but feeding them to
+            # the model was measured on 2026-09-18 and produced no edge: +0.00000
+            # nats over the market, 0 of 12 picks changed on a matched retrain,
+            # and a row-permuted placebo of the same nine columns scored HIGHER
+            # (+0.00003). Re-adding them is one line; re-test with
+            # scripts/experiment_h2h.py, which reads them off the frame whether
+            # or not they are trained on. See FEATURE_ENGINEERING_IDEAS.md 1.6.
 
             # Implied Probabilities
             'IP_H', 'IP_D', 'IP_A',
@@ -153,7 +163,7 @@ class ModelTrainer:
             features = [f for f in features if f != 'league_cat']
 
         # We focus on features relevant to balance/uncertainty
-        df_train = df.dropna(subset=features + ['target_draw']).copy()
+        df_train = self._training_rows(df, features, 'target_draw')
         df_train = df_train.sort_values('date')
 
         if spec.uses_categorical and 'league_cat' in df_train.columns:
@@ -229,6 +239,27 @@ class ModelTrainer:
             json.dump(features, f)
         print(f"Saved Draw model ({self.draw_family}).")
 
+    def _training_rows(self, df, features, target):
+        """Rows usable for fitting `features` against `target`.
+
+        Requires every feature EXCEPT the h2h block, whose averages are
+        legitimately NaN for a first-ever meeting between two teams.
+
+        Currently inert, since the h2h columns are not in `common_features`
+        (2026-09-18 — no measured edge). It is kept because it is the guard
+        that makes re-adding them safe: when they were in the list, dropping
+        on them cost 2,071 rows, 14.7% of the training set, and biased what
+        remained toward long-established pairings. XGBoost learns a split
+        direction for NaN natively, so the rows stay. The same exemption
+        applies to any future feature that is legitimately missing for some
+        rows rather than absent by accident.
+
+        Mirrored by `dropna_on` in scripts/experiment_odds_free.oof_predictions,
+        so the experiment scores the row set production would actually train on.
+        """
+        required = [f for f in features if f not in H2H_FEATURES]
+        return df.dropna(subset=required + [target]).copy()
+
     def train_1x2(self, df):
         print(f"\n--- Training 1X2 Model (family={self.model_family}) ---")
         # The model family is resolved through the shared seam (model_registry).
@@ -245,7 +276,7 @@ class ModelTrainer:
         if not spec.uses_categorical and 'league_cat' in features:
             features = [f for f in features if f != 'league_cat']
 
-        df_train = df.dropna(subset=features + ['target_1x2']).copy()
+        df_train = self._training_rows(df, features, 'target_1x2')
         df_train = df_train.sort_values('date')
 
         # Enable Categorical for XGBoost (only when the family consumes it)
@@ -361,7 +392,7 @@ class ModelTrainer:
         # Target: Total Goals
         df['total_goals'] = df['FTHG'] + df['FTAG']
 
-        df_train = df.dropna(subset=features + ['total_goals']).copy()
+        df_train = self._training_rows(df, features, 'total_goals')
         df_train = df_train.sort_values('date')
 
         # Enable Categorical for XGBoost (only when the family consumes it)

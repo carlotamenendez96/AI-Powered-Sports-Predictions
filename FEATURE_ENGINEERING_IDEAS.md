@@ -159,12 +159,80 @@ Keep existing unweighted features unchanged, add A + B + C as *new* columns. Let
 **Implication for the rest of D2**: candidates the market *also* efficiently prices (promoted-team, H2H, manager-change) are likely to come up similarly flat. The real headroom is either (a) signals the market prices *inefficiently* (rare/hard-to-quantify — injuries to specific key players, lineup leaks), or (b) dropping the odds-dependence so the model must learn fundamentals (a bigger architectural choice, overlaps with D3). Worth weighing before spending more days on Tier-1 date/form features.
 **Risk**: low. Just be sure to skip the first matchday of each season cleanly (no prior match → use a sentinel like 14 days).
 
-### 1.6 Head-to-head specifics (last 2–3 H2H)
-**What**: features from the last 2–3 meetings between these specific teams: H2H goals avg, H2H result, H2H total goals.
+### 1.6 Head-to-head specifics (last 2–3 H2H) — ❌ TESTED, NO EDGE (2026-09-18)
+**What**: features from the last meetings between these specific teams: H2H goals avg, H2H result, H2H total goals.
 **Why**: rivalries / stylistic matchups produce repeatable patterns the global model misses ("these two always draw," "this fixture is always 3+ goals").
 **Cost**: medium. Need to build a lookup of past meetings per (home_team, away_team) ordered pair; respect the date filter.
-**Expected lift**: 1–2% Brier. Smaller than opponent-adjusted form, but a free additive on top.
-**Risk**: only ~1–2 H2H matches per team-pair per season, so the feature is sparse and noisy. Consider falling back to a league-wide draw rate when there's < 2 H2H samples.
+**Expected lift (doc, pre-test)**: 1–2% Brier. Smaller than opponent-adjusted form, but a free additive on top.
+**Empirical result (post-test)**: **no edge over the market on either head.** The columns are built, mirrored at serve time and left in the pipeline, but they do not move the decisive metric.
+
+**Sparsity was not the problem.** The doc feared "~1–2 H2H matches per team-pair per season". With `MatchHistory` running from 2010, **89.4%** of corpus rows have at least one prior meeting and **56.3%** have five, so `H2H_WINDOW = 5` was used rather than 2–3, and no league-wide fallback was needed. Averages are NaN (not 0) for a first-ever meeting, and `h2h_n` / `h2h_venue_n` carry the sample size so the model can discount a thin one.
+
+**There is real univariate signal.** On rows with a full 5-meeting sample (n=105,119), sorting by the H2H rate is monotone in the outcome:
+
+| `h2h_ou_rate` band | n | actual over 2.5 |
+| --- | ---: | ---: |
+| 0.0–0.2 | 4,131 | 45.0% |
+| 0.2–0.4 | 17,247 | 47.1% |
+| 0.4–0.6 | 31,025 | 49.5% |
+| 0.6–0.8 | 30,827 | 52.1% |
+| 0.8–1.0 | 21,889 | 55.1% |
+
+`h2h_draw_rate` is monotone too, but much weaker (24.6% → 27.3% against a 25.9% base rate). So "this fixture is always 3+ goals" is a real effect; "these two always draw" barely registers.
+
+**It is not incremental.** `scripts/experiment_h2h.py` runs three arms on one engineered frame (11,720 OOF rows on the picked side) and scores nats added on top of the devigged market price:
+
+| head | arm | nats added | OOF Brier | vs base |
+| --- | --- | ---: | ---: | ---: |
+| 1X2 | base (59 feats) | +0.00002 | 0.60124 | — |
+| 1X2 | **placebo** (68) | +0.00003 | 0.60141 | −0.029% |
+| 1X2 | h2h (68) | +0.00000 | 0.60124 | −0.001% |
+| O/U | base (61 feats) | −0.00000 | 0.24565 | — |
+| O/U | **placebo** (70) | +0.00000 | 0.24573 | −0.036% |
+| O/U | h2h (70) | +0.00000 | 0.24551 | +0.054% |
+
+Against the doc's own ≥1% Brier bar: 1X2 came in at **−0.001%** and O/U at **+0.054%**. Both are noise.
+
+**The placebo arm is the methodological point, and it should be reused.** The tuned booster runs `colsample_bytree=0.6`, so widening 59 → 68 columns changes which features every tree may choose from. That perturbation alone moves Brier by ~0.03% — the same order as the effect being measured. The placebo carries the nine columns with their values **permuted as a block across rows** (same width, same marginals, same NaN pattern, no link to the fixture). On 1X2 the placebo scored **+0.00003 nats against the real block's +0.00000** — the shuffled columns did better. Without that control, "h2h − base" would have been read as a small positive on O/U.
+
+**Gain share is not evidence of information.** The model leans on these columns hard — 8.2% of total 1X2 gain (8 of 9 used, `h2h_pts` at rank #12) and 11.9% of O/U gain (`h2h_goals` at rank #6 of 70). But the **shuffled** block takes **8.9%** of 1X2 gain and **10.1%** of O/U gain, with `h2h_n` ranked #11. XGBoost spends splits on a high-cardinality numeric column whether or not it knows anything. **This retroactively weakens the gain-share evidence quoted for the L10/L15 form features** ("13 of 14 in the booster at 15.9% of gain", CLAUDE.md) — that number was never compared against a shuffled control, and this experiment suggests a control would have absorbed much of it.
+
+**Matched retrain comparison (the "what would actually change" read)**: two models trained by the real `ModelTrainer` on the identical frame, differing only in the nine columns, then both run through `predict_matches` on the 2026-09-17 slate (12 matches):
+
+| | base | with h2h |
+| --- | ---: | ---: |
+| CV accuracy, 1X2 | **0.5053** | 0.5040 |
+| CV accuracy, O/U | 0.5568 | 0.5568 |
+| 1X2 picks changed | — | **0 / 12** |
+| O/U picks changed | — | **0 / 12** |
+| mean \|Δ Home Win %\| | — | 0.0125 |
+| mean \|Δ Over %\| | — | 0.0158 |
+
+Not one pick moved. Note the first attempt at this comparison ran the h2h model against the **currently deployed** model and showed 1 pick changing on each market — that delta was entirely the deployed model's age, not the feature. Compare like with like.
+
+**Why it didn't help — same mechanism as §1.2 and §1.5**: the price already contains it. A recurring 3+ goal fixture is visible to the market too, and the O/U line moves accordingly, so the model gains nothing orthogonal by re-deriving it from the same results. This is the third Tier-1 feature to die this way, and the pattern in the §1.5 note ("candidates the market *also* efficiently prices … are likely to come up similarly flat") now has H2H as a confirmed instance rather than a prediction.
+
+**Also tested as a post-prediction calibrator, not just as a feature (2026-09-18).** Worth asking separately: the booster sees 65 columns through `colsample_bytree=0.6`, `max_depth=3` and `gamma=5`, so a weak-but-real signal could be drowned there and still be recoverable by a direct one-parameter fit on the finished probability. `scripts/experiment_h2h_calibrator.py` fits exactly that — unregularised logistic, coefficient per 1 SD of the h2h term, 5-fold cross-fitted so a calibrator is never graded on its own fitting rows:
+
+| market | h2h term | on top of PRICE | on top of MODEL | on top of MODEL+PRICE |
+| --- | --- | ---: | ---: | ---: |
+| O/U 2.5 | `h2h_ou_rate` | +0.016 (0.020) **z +0.8** | +0.050 (0.020) **z +2.6** | +0.016 (0.020) **z +0.8** |
+| O/U 2.5 | `h2h_goals` | +0.011 (0.020) z +0.5 | +0.054 (0.020) **z +2.7** | +0.011 (0.020) z +0.5 |
+| 1X2 home | `h2h_pts` | +0.019 (0.023) z +0.8 | +0.034 (0.023) z +1.5 | +0.019 (0.023) z +0.8 |
+| 1X2 draw | `h2h_draw_rate` | −0.024 (0.022) z −1.1 | −0.018 (0.022) z −0.8 | −0.024 (0.022) z −1.1 |
+
+**The answer is a precise "yes, and it still doesn't help".** A post-hoc H2H correction genuinely does improve the model's own O/U probabilities — `h2h_ou_rate` at **z = +2.6** and `h2h_goals` at **z = +2.7** are real, not noise, which is the one place anything in this whole investigation cleared a significance bar. But on top of the *price* the same terms are flat (|z| ≤ 1.1), and the moment the price is in the equation the term collapses from z +2.6 to **z +0.8**. So the calibrator's entire contribution is pushing the model back toward the price it already had. Scale: the best case is **+0.00020 nats**, against vig worth roughly 0.02–0.05 — two to three orders of magnitude short.
+
+This also rules out the more elaborate versions before they get built (per-league H2H calibrator, shrinkage toward a league base rate, an H7 rule in `heuristic_adjuster.py`). They are all restricted forms of the fit above, so none can beat a coefficient that is already indistinguishable from zero against the price. It is the same conclusion as the feature test, reached independently and by a route that could have disagreed.
+
+**Rolled back from `common_features` (2026-09-18).** Unlike the L10/L15 precedent, the nine columns are *not* left in the trained feature list — they measured flat, they cost nine columns of `colsample_bytree` perturbation, and the placebo showed that perturbation is not free. `common_features` is back to **56**. What stays: `h2h_features()` + `_add_h2h_features` (still run by `prepare_data`, so the frame carries the columns), the serve-time mirror `get_h2h_stats`, `ModelTrainer._training_rows`, and both experiment scripts. Re-adding is one line in `train_model.common_features`, and both experiments read the columns off the frame whether or not they are trained on — so this stays re-testable at any time without rebuilding anything.
+
+**Implementation notes**:
+- `feature_engineering.h2h_features()` is the single source of truth, called by `FeatureEngineer._add_h2h_features` (training, one date-ordered pass accumulating per-pair history) and `predict_matches.MatchPredictor.get_h2h_stats` (serve time, per-fixture filter). Verified: 1,080 (fixture, column) values compared across the two paths, **0 mismatches**; and 400 rows × 9 columns against a brute-force recompute, **0 mismatches**.
+- Rows sharing a date are scored as a block before any of them is folded into history, so same-day fixtures cannot see each other. Every first-ever meeting has `h2h_n == 0` and NaN averages (verified over all 19,777 of them).
+- **`ModelTrainer._training_rows` was added for this.** All three heads used to `dropna` on the full feature list; with NaN-bearing H2H columns in it, that silently dropped **2,071 rows — 14.7% of the training set** — as the price of adding a feature, and biased what remained toward long-established pairings. The helper exempts the H2H block (XGBoost splits on NaN natively); `oof_predictions(dropna_on=...)` mirrors it so the experiment scores the rows production would actually train on.
+
+**Artifacts**: `output/experiments/h2h_20260918_093710.{json,txt}` (feature test) and `output/experiments/h2h_calibrator_20260918_094842.{json,txt}` (calibrator test). Re-run with `python3 scripts/experiment_h2h.py` and `python3 scripts/experiment_h2h_calibrator.py`. The latter caches base-arm OOF predictions at `output/experiments/_oof_base.pkl`, which is a reusable starting point for any other post-hoc-adjustment question.
 
 ### 1.7 Goal-difference / scoring-trend features
 **What**: rate of change of `form_gf` and `form_ga` — i.e. is the team trending up or down? Compute as `recent_3_avg − previous_5_avg`.

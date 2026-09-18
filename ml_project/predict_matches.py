@@ -5,7 +5,8 @@ import xgboost as xgb
 import json
 import os
 import datetime
-from feature_engineering import FeatureEngineer, FORM_WINDOWS
+from feature_engineering import (FeatureEngineer, FORM_WINDOWS,
+                                 H2H_FEATURES, h2h_features)
 from entity_resolver import EntityResolver
 from data_loader import DataLoader
 import glob
@@ -217,6 +218,30 @@ class MatchPredictor:
 
         return stats
 
+    def get_h2h_stats(self, home_team, away_team, date_before):
+        """Head-to-head record between these two teams, oriented to `home_team`.
+
+        Mirrors FeatureEngineer._add_h2h_features: same MatchHistory corpus,
+        same H2H_WINDOW, same orientation, same strictly-before filter, and the
+        same `h2h_features` helper does the arithmetic — so a column can't mean
+        one thing in training and another at serve time.
+
+        Team names must already be canonical (entity_resolver output), as the
+        corpus is keyed on the football-data.co.uk spelling, not Flashscore's.
+        """
+        if not home_team or not away_team:
+            return h2h_features([], home_team)
+
+        hist = self.history_df
+        pair = (((hist['home_team'] == home_team) & (hist['away_team'] == away_team)) |
+                ((hist['home_team'] == away_team) & (hist['away_team'] == home_team)))
+        meetings = hist[(hist['date'] < date_before) & pair].sort_values('date')
+
+        return h2h_features(
+            [(r.home_team, r.FTHG, r.FTAG) for r in meetings.itertuples()],
+            home_team,
+        )
+
     def get_venue_specific_stats(self, team_name, is_home_focus, date_before):
         """
         Get stats for Last 5 HOME games if is_home_focus=True, else Last 5 AWAY games.
@@ -363,9 +388,11 @@ class MatchPredictor:
                 
                 h_spec = self.get_venue_specific_stats(canon_home, True, match_date_obj)
                 a_spec = self.get_venue_specific_stats(canon_away, False, match_date_obj)
+                h2h = self.get_h2h_stats(canon_home, canon_away, match_date_obj)
             except Exception as e:
                 # print(f"Error calculating stats for {scraper_home} vs {scraper_away}: {e}")
                 h_stats = None # Will fallback to zeros
+                h2h = h2h_features([], canon_home)   # no-history sentinel, not zeros
             
             # Zero-fill for a team with no corpus history. Must cover every
             # window in FORM_WINDOWS, not just L5, or the input-row build below
@@ -428,6 +455,8 @@ class MatchPredictor:
                 'H_att': h_att, 'A_att': a_att,
                 'H_def': h_def, 'A_def': a_def,
                 'att_def_diff': att_def_diff,
+                # Head-to-head (mirrors FeatureEngineer._add_h2h_features)
+                **{c: h2h[c] for c in H2H_FEATURES},
             }
 
             # Longer-horizon form + trend, mirroring FeatureEngineer exactly:
