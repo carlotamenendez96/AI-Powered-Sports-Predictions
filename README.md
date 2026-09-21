@@ -80,9 +80,11 @@ Los datos **no se actualizan solos**. `./bin/setup_data.sh` es solo el arranque 
 **Diario** (activar venv antes: `source venv/bin/activate`):
 ```bash
 ./bin/update_leagues_data.sh   # standings/form → features a la hora de predecir
-./bin/run_predictions.sh       # scrape mañana + predicciones
+./bin/run_predictions.sh       # scrape mañana + predicciones (+ availability/bajas, no fatal)
 ./bin/run_verification.sh      # al día siguiente: resultados de ayer + asienta apuestas
 ```
+
+`run_predictions.sh` escribe también `output/availability_<date>.json` (bajas Flashscore “Will not play”). Si falla, las predicciones siguen válidas. Re-correr a mano: `python3 scripts/d4_injuries/extract_availability.py YYYY-MM-DD`.
 
 **Semanal** (p.ej. lunes):
 ```bash
@@ -91,12 +93,12 @@ Los datos **no se actualizan solos**. `./bin/setup_data.sh` es solo el arranque 
 
 Orden típico del día: update standings → predict (noche antes) → verify (cuando hayan acabado los partidos de ayer).
 
-**Opcional — justificaciones (texto en español, nivel 1):**
+**Opcional — justificaciones (texto en español, nivel 1 + bajas):**
 ```bash
 python3 scripts/justify_predictions.py              # latest predictions_*.csv
 python3 scripts/justify_predictions.py --date YYYY-MM-DD --print
 ```
-Escribe `output/justifications_<date>.{json,txt}` a partir de probs/cuotas/ELO/heurísticas (sin lesiones ni árbitro). Al abrir el CSV de predicciones en la UI, la columna **Justification** aparece si existe ese JSON.
+Escribe `output/justifications_<date>.{json,txt}` a partir de probs/cuotas/ELO/heurísticas. Si existe `availability_<date>.json`, añade bajas **relevantes** (lesión / sanción / dudoso; omite `inactive`) como contexto tipster — **el modelo aún no ajusta el pick por ellas**. Al abrir el CSV de predicciones en la UI, la columna **Justification** aparece si existe ese JSON.
 
 ### CLI Commands (NBA)
 *   **Run Prediction** (Tomorrow's Matches):
@@ -172,6 +174,7 @@ Detailed guides in `docs/`:
 *   [Codebase Overview](docs/codebase_overview.md)
 *   [Telegram notifications (GitHub Actions)](docs/telegram_notifications.md)
 *   [Server deployment](docs/server_deployment.md) — cuando quieras sacar el batch del Mac
+*   [Enriched match data roadmap](docs/enriched_match_data_roadmap.md) — alineaciones, árbitros, tarjetas, córners (qué hacer después y por qué)
 
 Project conventions, architecture, and pipeline details for Claude Code and human contributors:
 *   [`CLAUDE.md`](CLAUDE.md) — environment, common commands, architecture, data layout, operational cadence

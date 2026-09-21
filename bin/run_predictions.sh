@@ -174,6 +174,15 @@ python3 scripts/national_teams/predict_nt_batch.py --matches "$OUTPUT_JSON" \
     && echo "[+] National-Team Prediction Complete." \
     || echo "[!] NT prediction step failed (non-fatal); club predictions intact."
 
+# 5. Availability / bajas extraction (D4 Paso 1, ver docs/enriched_match_data_roadmap.md).
+# Read-only respecto al modelo: solo escribe output/availability_<date>.json.
+# Non-fatal — si falla (o Flashscore cambia el DOM), las predicciones ya están escritas.
+echo ""
+echo "[*] Extracting availability (bajas) for $DATE..."
+python3 scripts/d4_injuries/extract_availability.py "$DATE" \
+    && echo "[+] Availability extraction complete." \
+    || echo "[!] Availability extraction failed (non-fatal); predictions intact."
+
 echo ""
 echo "========================================"
 echo "           Pipeline Finished            "

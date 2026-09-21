@@ -5,9 +5,11 @@ Reads `output/predictions_YYYY-MM-DD.csv` and writes a companion JSON (+ optiona
 plain-text report) explaining each pick in Spanish from fields the model
 already produces: probs, odds, EV, ELO, heuristic Adj Logs.
 
-This is intentionally boring and honest — it does NOT invent injuries,
-referees, or corners. Later layers (availability, referee feeds, LLM prose)
-can plug into the same output schema.
+If `output/availability_<date>.json` exists (from extract_availability / Paso 1),
+adds a short factual block for relevant absences (injury / suspension / doubtful).
+Those lines are context only — the 1X2/O/U model does **not** use bajas yet.
+
+Does NOT invent referees or corners. Later layers can plug into the same schema.
 
 Usage:
     python3 scripts/justify_predictions.py
@@ -28,6 +30,12 @@ import pandas as pd
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUTPUT_DIR = os.path.join(PROJECT_ROOT, "output")
+
+JUSTIFY_VERSION = "level1+availability-v1"
+
+# Absences worth mentioning in tipster text. "inactive" is rotation/noise — skip.
+_RELEVANT_REASON_CLASSES = frozenset({"injury", "suspension", "doubtful"})
+_MAX_ABSENTEES_PER_SIDE = 4
 
 PICK_1X2 = {"1": "victoria local", "X": "empate", "2": "victoria visitante",
             "Home": "victoria local", "Draw": "empate", "Away": "victoria visitante"}
@@ -111,7 +119,65 @@ def _humanize_adj_logs(raw: str) -> list[str]:
     return out[:4]
 
 
-def justify_row(row: dict) -> dict:
+def load_availability(date: str) -> dict:
+    """Load output/availability_<date>.json or {} if missing / unreadable."""
+    path = os.path.join(OUTPUT_DIR, f"availability_{date}.json")
+    if not os.path.isfile(path):
+        return {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError) as e:
+        print(f"[!] Could not read {path}: {e}", file=sys.stderr)
+        return {}
+
+
+def _format_absentee(a: dict) -> str:
+    name = (a.get("name") or "?").strip()
+    reason = (a.get("reason") or "").strip()
+    return f"{name} ({reason})" if reason else name
+
+
+def _relevant_absentees(side_list) -> list[dict]:
+    if not side_list:
+        return []
+    out = []
+    for a in side_list:
+        if not isinstance(a, dict):
+            continue
+        cls = (a.get("reason_class") or "other").lower()
+        if cls in _RELEVANT_REASON_CLASSES:
+            out.append(a)
+    return out[:_MAX_ABSENTEES_PER_SIDE]
+
+
+def availability_phrase(avail_rec: dict | None) -> str | None:
+    """Spanish sentence listing relevant bajas, or None if nothing worth saying.
+
+    Honest: Flashscore context only — the production model does not adjust for these.
+    """
+    if not avail_rec:
+        return None
+    home = _relevant_absentees(avail_rec.get("home") or [])
+    away = _relevant_absentees(avail_rec.get("away") or [])
+    if not home and not away:
+        return None
+
+    bits = []
+    if home:
+        bits.append("Bajas locales: " + ", ".join(_format_absentee(a) for a in home))
+    if away:
+        label = "visitantes" if home else "Bajas visitantes"
+        bits.append(f"{label}: " + ", ".join(_format_absentee(a) for a in away))
+    body = "; ".join(bits) + "."
+    return (
+        body
+        + " (Dato Flashscore «Will not play»; el modelo 1X2/O/U aún no ajusta por bajas.)"
+    )
+
+
+def justify_row(row: dict, availability_by_id: dict | None = None) -> dict:
     home = str(row.get("Home Team") or row.get("Home") or "?")
     away = str(row.get("Away Team") or row.get("Away") or "?")
     league = str(row.get("League") or "")
@@ -128,6 +194,7 @@ def justify_row(row: dict) -> dict:
     ev_ou = _f(row.get("EV O/U"))
     p_o = _f(row.get("Over %"))
     p_u = _f(row.get("Under %"))
+    match_id = str(row.get("match_id") or "").strip() or None
 
     parts = []
     parts.append(
@@ -164,14 +231,29 @@ def justify_row(row: dict) -> dict:
     for bullet in _humanize_adj_logs(row.get("Adj Logs", "")):
         parts.append(bullet)
 
-    parts.append(
-        "Nota: esta justificación solo usa datos del modelo (probs, cuotas, ELO, heurísticas). "
-        "No incluye lesiones, alineaciones ni árbitro."
-    )
+    used_availability = False
+    avail_rec = None
+    if availability_by_id and match_id:
+        avail_rec = availability_by_id.get(match_id)
+        phrase = availability_phrase(avail_rec)
+        if phrase:
+            parts.append(phrase)
+            used_availability = True
+
+    if used_availability:
+        parts.append(
+            "Nota: probs/cuotas/ELO/heurísticas del modelo; las bajas anteriores son "
+            "contexto tipster, no input del pick."
+        )
+    else:
+        parts.append(
+            "Nota: esta justificación usa datos del modelo (probs, cuotas, ELO, heurísticas). "
+            "Sin bajas relevantes en availability (o sin fichero) para este partido."
+        )
 
     text = " ".join(parts)
     return {
-        "match_id": str(row.get("match_id") or "").strip() or None,
+        "match_id": match_id,
         "date": str(row.get("Date") or "").split(" ")[0],
         "league": league,
         "home": home,
@@ -179,7 +261,8 @@ def justify_row(row: dict) -> dict:
         "pred_1x2": pick,
         "pred_ou": ou,
         "justification": text,
-        "version": "level1-template-v1",
+        "used_availability": used_availability,
+        "version": JUSTIFY_VERSION,
     }
 
 
@@ -215,7 +298,15 @@ def main() -> int:
         return 1
 
     df = pd.read_csv(pred_path)
-    items = [justify_row(r.to_dict()) for _, r in df.iterrows()]
+    availability = load_availability(date)
+    if availability:
+        print(f"[*] Loaded availability for {len(availability)} matches "
+              f"(output/availability_{date}.json)")
+    else:
+        print(f"[*] No availability_{date}.json — justificaciones sin bloque de bajas")
+
+    items = [justify_row(r.to_dict(), availability) for _, r in df.iterrows()]
+    n_with_bajas = sum(1 for m in items if m.get("used_availability"))
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     out_json = os.path.join(OUTPUT_DIR, f"justifications_{date}.json")
@@ -223,13 +314,18 @@ def main() -> int:
         "date": date,
         "generated_at": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "source": os.path.basename(pred_path),
-        "version": "level1-template-v1",
+        "availability_source": (
+            f"availability_{date}.json" if availability else None
+        ),
+        "version": JUSTIFY_VERSION,
         "count": len(items),
+        "with_availability": n_with_bajas,
         "matches": items,
     }
     with open(out_json, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
-    print(f"[+] Wrote {len(items)} justifications → {out_json}")
+    print(f"[+] Wrote {len(items)} justifications "
+          f"({n_with_bajas} con bajas relevantes) → {out_json}")
 
     if args.txt and not args.no_txt:
         out_txt = os.path.join(OUTPUT_DIR, f"justifications_{date}.txt")
