@@ -80,11 +80,13 @@ Los datos **no se actualizan solos**. `./bin/setup_data.sh` es solo el arranque 
 **Diario** (activar venv antes: `source venv/bin/activate`):
 ```bash
 ./bin/update_leagues_data.sh   # standings/form → features a la hora de predecir
-./bin/run_predictions.sh       # scrape mañana + predicciones (+ availability/bajas, no fatal)
+./bin/run_predictions.sh       # scrape mañana + predicciones (+ availability + referees, no fatal)
 ./bin/run_verification.sh      # al día siguiente: resultados de ayer + asienta apuestas
 ```
 
 `run_predictions.sh` escribe también `output/availability_<date>.json` (bajas Flashscore “Will not play”). Si falla, las predicciones siguen válidas. Re-correr a mano: `python3 scripts/d4_injuries/extract_availability.py YYYY-MM-DD`.
+
+`run_predictions.sh` escribe también `output/referees_<date>.json` (árbitro asignado, Flashscore). No fatal. Re-correr a mano: `python3 scripts/d4_referees/extract_referees.py YYYY-MM-DD`.
 
 **Semanal** (p.ej. lunes):
 ```bash

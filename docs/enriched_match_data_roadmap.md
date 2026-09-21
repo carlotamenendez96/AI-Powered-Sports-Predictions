@@ -88,7 +88,7 @@ buscar un dump externo). No asumir un CSV mágico el día 1: el histórico se
 | Bajas / “Will not play” Flashscore | **Cableado en `run_predictions.sh` (paso no fatal) — validando 1ª semana** | `scripts/d4_injuries/extract_availability.py` → `output/availability_<date>.json` |
 | Importancia jugador (SoFIFA OVR) | Hecho pero D4 aparcado (OVR ≠ impacto) | `ml_project/availability/sofifa_importance.py` |
 | Adjuster 1X2 por bajas | No hecho (shelved N3) | No priorizar hasta medir |
-| Árbitro del partido | No existe | Fase B |
+| Árbitro del partido | **Cableado en `run_predictions.sh` (paso no fatal)** | `scripts/d4_referees/extract_referees.py` → `output/referees_<date>.json` |
 | Histórico árbitros (tarjetas…) | No existe | Fase B–C |
 | Modelo / mercado tarjetas | No existe | Fase E |
 | Modelo / mercado córners | No existe | Fase F |
@@ -151,13 +151,22 @@ Cada paso tiene: **qué**, **por qué**, **entregable**, **criterio de listo**,
 
 ### Paso 3 — Árbitro del día (Fase B, asignación)
 
+* **Estado (2026-09-21):** cableado. Tras availability, `bin/run_predictions.sh`
+  llama a `scripts/d4_referees/extract_referees.py` con la misma `$DATE` (paso
+  no fatal). Selector Flashscore: `data-testid="wcl-summaryMatchInformation"`
+  (fila Referee). Smoke: 14/14 (2026-09-20) y 7/7 (2026-09-21) con
+  `referee_name` — 100% cobertura en esas slates. `referee_id` suele ser
+  `null` (Flashscore no enlaza al árbitro hoy). Manual:
+  `python3 scripts/d4_referees/extract_referees.py YYYY-MM-DD`.
 * **Qué:** Scrape del árbitro asignado por `match_id` →
   `output/referees_<date>.json`.
 * **Por qué:** Sin nombre/id del colegiado del partido no hay histórico que
   cruzar.
-* **Entregable:** JSON `{match_id: {referee_name, referee_id?, source_url}}`.
+* **Entregable:** JSON `{match_id: {referee_name, referee_id?, source_url}}`
+  (también `home_team`/`away_team`/`league`/`ts`/`referee_country`).
 * **Listo cuando:** Cobertura alta en ligas objetivo (p.ej. >80% de la slate
-  con árbitro).
+  con árbitro). (Cumplido en smoke 2026-09-20/21; puede bajar en partidos
+  futuros aún sin asignación publicada.)
 * **Siguiente:** Paso 4.
 
 ### Paso 4 — Histórico de árbitros (Fase B–C, catálogo)
@@ -334,9 +343,9 @@ meterlas en `predict_matches` / heurísticas / features de train.
 
 ```text
 ./bin/update_leagues_data.sh
-./bin/run_predictions.sh                              # incluye extract_availability (Paso 1)
+./bin/run_predictions.sh                              # incluye extract_availability + extract_referees
 # python3 scripts/d4_injuries/extract_availability.py YYYY-MM-DD  # solo si hace falta re-correr
-python3 scripts/<referee_assignment>.py               # Paso 3 (cuando exista)
+# python3 scripts/d4_referees/extract_referees.py YYYY-MM-DD      # solo si hace falta re-correr
 python3 scripts/justify_predictions.py                # Pasos 2+5
 # opcional: Telegram con justificaciones enriquecidas
 
@@ -377,12 +386,12 @@ Semanal: `./bin/retrain_pipeline.sh` sigue siendo solo el modelo
 ## 8. Próxima acción concreta (una sola)
 
 **Ahora:** validar la 1ª semana de bajas (§4.1) mientras sigue la cadencia
-diaria (`run_predictions` → availability → `justify_predictions`).
+diaria (`run_predictions` → availability → referees → `justify_predictions`).
 
-En paralelo o después: **Paso 3** (árbitro del día).
+En paralelo o después: **Paso 4** (histórico de árbitros / tarjetas).
 
 **No** implementar Paso 8 (adjuster) hasta gate §4.1 abierto.
 
-Frase de arranque para el agente: *“Implementa el Paso 3 del roadmap
+Frase de arranque para el agente: *“Implementa el Paso 4 del roadmap
 docs/enriched_match_data_roadmap.md”* — o, si el gate está cerrado:
 *“Ayúdame a rellenar / automatizar el checklist §4.1 del roadmap”*.

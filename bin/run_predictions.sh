@@ -183,6 +183,15 @@ python3 scripts/d4_injuries/extract_availability.py "$DATE" \
     && echo "[+] Availability extraction complete." \
     || echo "[!] Availability extraction failed (non-fatal); predictions intact."
 
+# 6. Árbitro del día (D4 Paso 3, Fase B, ver docs/enriched_match_data_roadmap.md).
+# Read-only respecto al modelo: solo escribe output/referees_<date>.json.
+# Non-fatal — si falla (o el partido no tiene árbitro asignado aún), las predicciones ya están escritas.
+echo ""
+echo "[*] Extracting referee assignments for $DATE..."
+python3 scripts/d4_referees/extract_referees.py "$DATE" \
+    && echo "[+] Referee extraction complete." \
+    || echo "[!] Referee extraction failed (non-fatal); predictions intact."
+
 echo ""
 echo "========================================"
 echo "           Pipeline Finished            "
