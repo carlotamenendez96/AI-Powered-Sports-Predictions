@@ -45,7 +45,7 @@ except ImportError:  # pragma: no cover — keep justify runnable if script move
     def normalize_referee(raw_name):  # type: ignore[misc]
         return None, None
 
-JUSTIFY_VERSION = "level1+availability+referee-v1"
+JUSTIFY_VERSION = "level1+availability+referee+cards-v1"
 
 # Absences worth mentioning in tipster text. "inactive" is rotation/noise — skip.
 _RELEVANT_REASON_CLASSES = frozenset({"injury", "suspension", "doubtful"})
@@ -316,11 +316,49 @@ def referee_phrase(ref_rec: dict | None, rate_index: dict | None) -> str | None:
     )
 
 
+def load_cards_predictions(date: str) -> dict:
+    """Load predictions_cards_<date>.csv keyed by match_id, or {} if absent.
+
+    Factual only — never invents a cards pick. Used for one optional tipster
+    line when Paso 6 has produced a serve file for this slate.
+    """
+    path = os.path.join(OUTPUT_DIR, f"predictions_cards_{date}.csv")
+    if not os.path.isfile(path):
+        return {}
+    try:
+        df = pd.read_csv(path, dtype={"match_id": str})
+    except Exception:
+        return {}
+    out = {}
+    for _, row in df.iterrows():
+        mid = str(row.get("match_id") or "").strip()
+        if mid:
+            out[mid] = row.to_dict()
+    return out
+
+
+def cards_phrase(card_row: dict | None) -> str | None:
+    """One factual sentence from predictions_cards when present."""
+    if not card_row:
+        return None
+    over = _f(card_row.get("Over %"))
+    pick = str(card_row.get("Prediction Cards") or "").strip()
+    if over is None:
+        return None
+    line = card_row.get("Card Line", 3.5)
+    return (
+        f"Modelo tarjetas (mercado aparte): P(over {line})={_pct(over)}"
+        + (f" → {pick}" if pick else "")
+        + ". No forma parte del pick 1X2/O/U ni de las lanes de apuestas."
+    )
+
+
 def justify_row(
     row: dict,
     availability_by_id: dict | None = None,
     referees_by_id: dict | None = None,
     referee_rates: dict | None = None,
+    cards_by_id: dict | None = None,
 ) -> dict:
     home = str(row.get("Home Team") or row.get("Home") or "?")
     away = str(row.get("Away Team") or row.get("Away") or "?")
@@ -395,6 +433,13 @@ def justify_row(
             if st and int(st.get("n_with_cards") or 0) >= _MIN_MATCHES_FOR_REF_RATES:
                 used_referee_rates = True
 
+    used_cards = False
+    if cards_by_id and match_id:
+        phrase = cards_phrase(cards_by_id.get(match_id))
+        if phrase:
+            parts.append(phrase)
+            used_cards = True
+
     # Closing honesty note — one of four states.
     if used_availability and used_referee:
         note = (
@@ -442,6 +487,7 @@ def justify_row(
         "used_availability": used_availability,
         "used_referee": used_referee,
         "used_referee_rates": used_referee_rates,
+        "used_cards": used_cards,
         "version": JUSTIFY_VERSION,
     }
 
@@ -506,13 +552,21 @@ def main() -> int:
         print("[*] No data_sets/referees/referee_matches.csv — "
               "árbitro solo por nombre si hay assignment")
 
+    cards = load_cards_predictions(date)
+    if cards:
+        print(f"[*] Loaded cards model preds for {len(cards)} matches "
+              f"(output/predictions_cards_{date}.csv)")
+    else:
+        print(f"[*] No predictions_cards_{date}.csv — sin línea de modelo tarjetas")
+
     items = [
-        justify_row(r.to_dict(), availability, referees, referee_rates)
+        justify_row(r.to_dict(), availability, referees, referee_rates, cards)
         for _, r in df.iterrows()
     ]
     n_with_bajas = sum(1 for m in items if m.get("used_availability"))
     n_with_ref = sum(1 for m in items if m.get("used_referee"))
     n_with_rates = sum(1 for m in items if m.get("used_referee_rates"))
+    n_with_cards = sum(1 for m in items if m.get("used_cards"))
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     out_json = os.path.join(OUTPUT_DIR, f"justifications_{date}.json")
@@ -529,18 +583,22 @@ def main() -> int:
         "referee_catalog": (
             "data_sets/referees/referee_matches.csv" if referee_rates else None
         ),
+        "cards_source": (
+            f"predictions_cards_{date}.csv" if cards else None
+        ),
         "version": JUSTIFY_VERSION,
         "count": len(items),
         "with_availability": n_with_bajas,
         "with_referee": n_with_ref,
         "with_referee_rates": n_with_rates,
+        "with_cards": n_with_cards,
         "matches": items,
     }
     with open(out_json, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
     print(f"[+] Wrote {len(items)} justifications "
           f"({n_with_bajas} con bajas, {n_with_ref} con árbitro, "
-          f"{n_with_rates} con tasas) → {out_json}")
+          f"{n_with_rates} con tasas, {n_with_cards} con modelo tarjetas) → {out_json}")
 
     if args.txt and not args.no_txt:
         out_txt = os.path.join(OUTPUT_DIR, f"justifications_{date}.txt")

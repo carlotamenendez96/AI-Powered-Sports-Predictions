@@ -32,7 +32,18 @@
             "value_max_daily_exposure_pct": 0.06,
             "conviction_max_daily_exposure_pct": 0.1,
             "model_max_daily_exposure_pct": 0.15,
-            "cashout_source": "bookmaker"
+            "cashout_source": "bookmaker",
+            "cards": {
+                "enabled": true,
+                "use_calibration": true,
+                "use_availability_at_serve": false,
+                "include_in_betting": true,
+                "synthetic_odd": 1.9,
+                "min_confidence": 0.55,
+                "bet_value": false,
+                "bet_conviction": true,
+                "bet_model": true
+            }
         },
         "nba": {
             "bankrolls": {

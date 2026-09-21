@@ -28,6 +28,9 @@ data_sets/referees/*
 !data_sets/referees/referee_matches.template.csv
 !data_sets/referees/referees.template.json
 
+# Paso 6 — cards calibrator (live fit is deployment state; template tracked).
+!data_sets/cards_calibration.template.json
+
 logs/
 output/
 output_basketball/

@@ -2675,6 +2675,66 @@ def auto_wager():
                 mb = build_model_bet(row, bet_type, sel, odd, conf, ev, kelly)
                 if mb: model_bets.append(mb)
 
+        # --- Cards market (Paso 6): join predictions_cards_<date>.csv ---
+        # No book odds in the scraper → synthetic_odd for conviction/model only.
+        # Value lane skipped by default (would invent EV). Settlement needs
+        # yellow-card totals; until then Cards bets stay OPEN (see resolve_daily_bets).
+        try:
+            from ml_project.cards.config import get_cards_config
+            cards_cfg = get_cards_config()
+        except Exception:
+            cards_cfg = {}
+        cards_date = os.path.basename(latest_file).replace('predictions_', '').replace('.csv', '')
+        cards_path = os.path.join(OUTPUT_DIR, f'predictions_cards_{cards_date}.csv')
+        if (cards_cfg.get('include_in_betting') and cards_cfg.get('enabled')
+                and os.path.isfile(cards_path)):
+            try:
+                cdf = pd.read_csv(cards_path)
+            except Exception as e:
+                print(f"[auto_wager] Could not read {cards_path}: {e}")
+                cdf = None
+            if cdf is not None and not cdf.empty:
+                synth = float(cards_cfg.get('synthetic_odd') or 1.90)
+                cards_min_conf = float(cards_cfg.get('min_confidence') or 0.55)
+                # Temporarily lower conviction floor for cards if needed — use
+                # the stricter of lane floor and cards min_conf for conviction.
+                for _, crow in cdf.iterrows():
+                    conf = _to_float(crow.get('Conf Cards', 0))
+                    if conf < cards_min_conf:
+                        continue
+                    # Build a row-shaped dict compatible with _common_fields.
+                    crow = crow.copy()
+                    crow['Prediction Cards'] = crow.get('Prediction Cards', '')
+                    crow['Cards Odd'] = synth
+                    crow['Conf Cards'] = conf
+                    crow['EV Cards'] = conf * synth - 1.0
+                    crow['Kelly Cards'] = '0%'
+                    # Align team/league columns if absent (cards CSV has them).
+                    if 'Home Team' not in crow.index and 'home' in crow.index:
+                        crow['Home Team'] = crow['home']
+                    if 'Away Team' not in crow.index and 'away' in crow.index:
+                        crow['Away Team'] = crow['away']
+                    cols = ('Cards', 'Prediction Cards', 'Cards Odd',
+                            'Conf Cards', 'EV Cards', 'Kelly Cards')
+                    if cards_cfg.get('bet_value'):
+                        vb = build_value_bet(crow, *cols)
+                        if vb:
+                            vb['odds_source'] = 'synthetic'
+                            value_bets.append(vb)
+                    if cards_cfg.get('bet_conviction'):
+                        # Conviction needs odd ≥ conv_min_odds; synth usually clears it.
+                        cb = build_conviction_bet(crow, *cols)
+                        if cb:
+                            cb['odds_source'] = 'synthetic'
+                            conviction_bets.append(cb)
+                    if cards_cfg.get('bet_model'):
+                        mb = build_model_bet(crow, *cols)
+                        if mb:
+                            mb['odds_source'] = 'synthetic'
+                            model_bets.append(mb)
+        elif cards_cfg.get('include_in_betting') and cards_cfg.get('enabled'):
+            print(f"[auto_wager] Cards betting on but missing {cards_path}")
+
         def _enforce_daily_cap(bets, bankroll, cap_pct, lane_name):
             """Per-lane daily cap: rank-and-truncate — keep the best bets at full
             stake until the cap is exhausted, drop the rest.

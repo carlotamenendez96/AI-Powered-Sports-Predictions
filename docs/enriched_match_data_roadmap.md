@@ -90,7 +90,7 @@ buscar un dump externo). No asumir un CSV mágico el día 1: el histórico se
 | Adjuster 1X2 por bajas | No hecho (shelved N3) | No priorizar hasta medir |
 | Árbitro del partido | **Cableado en `run_predictions.sh` (paso no fatal)** | `scripts/d4_referees/extract_referees.py` → `output/referees_<date>.json` |
 | Histórico árbitros (tarjetas…) | **Hecho (2026-09-21) — capa de datos** | `scripts/referees/build_referee_history.py` → `data_sets/referees/{referee_matches.csv,referees.json}`. Ver Paso 4. |
-| Modelo / mercado tarjetas | No existe | Fase E |
+| Modelo / mercado tarjetas | **Hecho (2026-09-21) — pipeline aislado, serve ON** | Fase E / Paso 6. Head binario `P(HY+AY > 3.5)` en `ml_project/cards/`. Gate OOF pasó. Serve activo en `run_predictions.sh` (`CARDS_ENABLED=0` para saltar). Sin lanes/stakes. |
 | Modelo / mercado córners | No existe | Fase F |
 
 Las bajas se **extraen** a diario (Paso 1) y se **citan** en la justificación
@@ -286,18 +286,114 @@ Cada paso tiene: **qué**, **por qué**, **entregable**, **criterio de listo**,
 * **Listo cuando:** UI/Telegram muestran bloque árbitro sin inventar cifras.
   Cumplido en JSON/TXT; la columna Justification de la UI lo lee del mismo
   fichero que antes.
-* **Siguiente:** Paso 6 solo cuando haya producto/mercado de tarjetas; mientras,
-  validar §4.1 (bajas) y opcionalmente sembrar más temporadas ENG/SCO.
+* **Siguiente:** Paso 6 hecho (2026-09-21). Mientras: validar §4.1 (bajas)
+  y opcionalmente sembrar más temporadas ENG/SCO.
 
 ### Paso 6 — Mercado tarjetas (Fase E) — solo después de 3–4
 
-* **Qué:** Target propio (p.ej. over amarillas, amarilla 1ª parte). Features:
-  árbitro (rates), bajas de jugadores “agresivos” si se puede etiquetar,
-  ligas, cuotas si existen.
-* **Por qué:** El head 1X2 **no** predice tarjetas; hace falta otro modelo o
-  reglas + calibración.
-* **Listo cuando:** Backtest o forward test con métrica clara (Brier / ROI
-  paper) vs baseline “media de liga” o “media del árbitro”.
+* **Estado (2026-09-21): hecho — pipeline aislado; gate OOF PASS; serve OFF.**
+  Producto primario fijado: **binario `P(total amarillas HY+AY > 3.5)`**
+  (`CARD_LINE = 3.5` en `ml_project/cards/constants.py`). Secundario/diagnóstico:
+  cabeza Poisson sobre `total_yellows` (`cards_total` en el registry) — no
+  sustituye al binario. **Fuera de alcance v1:** amarillas 1ª parte, player
+  props, mercado de rojas, córners (Paso 7), adjuster 1X2 (Paso 8).
+
+* **Aislamiento (ley del proyecto):** tarjetas ≠ 1X2. Nuevo target → nuevo
+  pipeline. **No** se meten features de amarillas en el XGBoost 1X2/O/U de
+  producción, ni se tocan lanes / bankrolls / `use_league_calibration`.
+
+* **Cobertura MatchHistory** (`python3 scripts/audit_cards_coverage.py`,
+  2026-09-21): **44/60** ficheros con `HY`/`AY` → **15.443** filas; **22**
+  ligas. Las 16 "extra leagues" (`/new/`: ARG, AUT, BRA, CHN, DEN, FIN, IRL,
+  JPN, MEX, NOR, POL, ROU, RUS, SUI, SWE, USA) **no** traen columnas de
+  tarjetas — no entrenables. Solo ENG+SCO tienen además `Referee` histórico.
+  **No hay cuotas de tarjetas** en el corpus → evaluación solo con métricas
+  de probabilidad (sin EV/ROI inventado).
+
+  | Liga | filas | mean(HY+AY) | P(>3.5) | Referee histórico |
+  | --- | ---: | ---: | ---: | --- |
+  | ENG-Championship | 1104 | 3.83 | 53.5% | sí |
+  | ENG-Conference | 1104 | 3.73 | 52.1% | sí |
+  | ENG-League 1 | 1104 | 3.82 | 54.2% | sí |
+  | ENG-League 2 | 1104 | 3.82 | 53.9% | sí |
+  | ESP-Segunda | 924 | 4.95 | 73.7% | no |
+  | ENG-Premier League | 760 | 3.96 | 58.2% | sí |
+  | ESP-La Liga | 760 | 4.59 | 64.3% | no |
+  | ITA-Serie B | 760 | 4.81 | 72.5% | no |
+  | ITA-Serie A | 760 | 4.01 | 58.0% | no |
+  | TUR-Ligi 1 | 685 | 4.51 | 62.8% | no |
+  | FRA-Ligue 2 | 684 | 3.74 | 50.6% | no |
+  | BEL-Jupiler League | 623 | 3.83 | 53.9% | no |
+  | GER / FRA / NED / POR / GER2 | ~612 c/u | 3.1–5.0 | 37–72% | no |
+  | GR-Super League | 475 | 5.28 | 76.4% | no |
+  | SCO (Prem + Div 1–3) | 1536 | ~3.8–3.9 | ~53–56% | sí |
+
+* **Layout:**
+  - `ml_project/cards/` — `constants`, `data_loader`, `feature_engineering`,
+    `train_cards`, `calibration`, `predict_cards`, `config` (lectura aislada
+    de `sports.football.cards`, **no** pasa por `sports_config`/LANES).
+  - `models/xgb_model_cards.json` + `features_cards.json` + `model_meta_cards.json`
+  - `data_sets/cards_calibration.json` (gitignored) + template trackeado
+  - `output/predictions_cards_<date>.csv`, `output/experiments/cards_<ts>.*`
+  - Registry: mercados nuevos `cards` / `cards_total` en
+    [`model_registry.py`](../ml_project/model_registry.py)
+
+* **Features (leakage-free):** forma de tarjetas L5/L10 por equipo (+ venue
+  home/away L5), tasas de roja, proxy combinado, prior expanding de liga,
+  bloque árbitro con gate `n≥20` partidos **previos** con hy/ay (si no →
+  NaN + `missing_ref=1`), `league_cat`, ELO diff. Disponibilidad/bajas:
+  **no** en train (sin backfill); flag `use_availability_at_serve=false`.
+  Paridad train/serve verificada: 40 samples, **0 mismatches**.
+
+* **Calibración:** un solo Platt **global** sobre P(over) (no per-liga —
+  lección del 1X2). Guards `MIN_PLATT_SLOPE` + accuracy/AUC. Fit 2026-09-21
+  **aceptado** (`a=0.66`, ΔBrier −0.0018).
+
+* **Gate OOF** (`scripts/experiment_cards.py`, n=12.660, 22 ligas):
+
+  | arm | Brier | logloss |
+  | --- | ---: | ---: |
+  | league_mean (mejor baseline) | 0.2383 | 0.6694 |
+  | referee_mean | 0.2385 | 0.6698 |
+  | model_raw | 0.2386 | 0.6702 |
+  | **model_cal** | **0.2368** | **0.6659** |
+  | placebo (form+ref shuffled) | 0.2575 | 0.7123 |
+
+  - `model_cal − league_mean` = **−0.0016** CI95 **[−0.0028, −0.0003]**
+    (excluye cero)
+  - placebo **no** bate al modelo real
+  - **PASS=True.** Mejora pequeña pero real frente al prior de liga; el
+    placebo demuestra que el bloque de features aporta (no es ruido de
+    ancho). **Sin claim de edge/ROI** — no hay cuotas de tarjetas.
+
+* **Comandos:**
+
+  ```bash
+  source venv/bin/activate
+  export PYTHONPATH=$PYTHONPATH:$(pwd):$(pwd)/ml_project
+
+  python3 scripts/audit_cards_coverage.py          # cobertura
+  python3 -m ml_project.cards.train_cards          # train + OOF
+  python3 -m ml_project.cards.calibration          # Platt global
+  python3 scripts/experiment_cards.py              # gate (baselines+placebo)
+  python3 -m ml_project.cards.predict_cards YYYY-MM-DD --force   # serve smoke
+  CARDS_ENABLED=1 ./bin/run_predictions.sh         # hook diario (no fatal)
+  ```
+
+* **Serve:** solo emite filas cuando la liga está en el universo de train y
+  hay prior de liga + forma L5 de ambos equipos. El resto se **salta** (log),
+  nunca se rellena. Hook en `run_predictions.sh` **ON** por defecto
+  (`CARDS_ENABLED=0` para desactivar). `justify_predictions` añade una línea factual solo si existe
+  `predictions_cards_<date>.csv`. **Apuestas virtuales ON** (mismos carriles conviction/model, `type=Cards`, cuota sintética 1.90 — value OFF). Liquidación solo si hay HY+AY en el resultado; si no, la apuesta queda OPEN. Sin claim de edge vs book (no hay cuotas reales de tarjetas).
+
+* **Qué aún no puede funcionar:** ligas extra sin HY/AY; tasas de árbitro
+  fuera de ENG/SCO (catálogo forward sin box-score); features de
+  suspensión/bajas en train. Sembrar más temporadas ENG/SCO ayuda al bloque
+  de árbitro, no al resto.
+
+* **Listo cuando:** gate PASS + serve smoke sin crash + docs. **Cumplido
+  2026-09-21.** Siguiente: Paso 7 (córners) o acumular forward box-score;
+  no activar apuestas reales sobre tarjetas sin odds + estudio ROI.
 
 ### Paso 7 — Mercado córners (Fase F)
 
@@ -455,7 +551,13 @@ python3 scripts/justify_predictions.py                # Pasos 2+5 (bajas + árbi
 ```
 
 Semanal: `./bin/retrain_pipeline.sh` sigue siendo solo el modelo
-**equipo/1X2/O/U**. Los mercados nuevos tendrán su propio train cuando existan.
+**equipo/1X2/O/U**. El mercado de tarjetas (Paso 6) se reentrena aparte:
+
+```bash
+python3 -m ml_project.cards.train_cards
+python3 -m ml_project.cards.calibration
+python3 scripts/experiment_cards.py
+```
 
 ---
 
@@ -487,16 +589,17 @@ Semanal: `./bin/retrain_pipeline.sh` sigue siendo solo el modelo
 
 **Ahora:** validar la 1ª semana de bajas (§4.1) mientras sigue la cadencia
 diaria (`run_predictions` → availability → referees → `justify_predictions`).
-Pasos 3–5 (árbitro del día + histórico + texto) ya están hechos; el
-histórico crece solo en cada `run_verification.sh`.
+Pasos 3–6 (árbitro + histórico + texto + **mercado tarjetas**) ya están
+hechos; el histórico de árbitros crece solo en cada `run_verification.sh`.
+Tarjetas: reentrenar semanal aparte; activar serve solo con
+`CARDS_ENABLED=1` tras revisar el último `output/experiments/cards_*`.
 
 Opcional: sembrar más temporadas ENG/SCO (`bin/setup_data.sh 2324` /
-`2425`) para que más árbitros crucen el umbral de tasas en la justificación.
+`2425`) para densificar tasas de árbitro; Paso 7 (córners) cuando quieras
+otro mercado aislado.
 
 **No** implementar Paso 8 (adjuster) hasta gate §4.1 abierto.
-**No** saltar a Paso 6 (mercado tarjetas) sin decidir producto + más
-cobertura de box score.
+**No** añadir stakes/lanes de tarjetas sin cuotas + estudio ROI.
 
 Frase de arranque para el agente: *“Ayúdame a rellenar / automatizar el
-checklist §4.1 del roadmap”* — o, si el gate está abierto y quieres
-mercados nuevos: *“Implementa el Paso 6 del roadmap…”*.
+checklist §4.1 del roadmap”* — o *“Implementa el Paso 7 del roadmap…”*.

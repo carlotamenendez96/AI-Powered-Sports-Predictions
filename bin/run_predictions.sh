@@ -192,6 +192,16 @@ python3 scripts/d4_referees/extract_referees.py "$DATE" \
     && echo "[+] Referee extraction complete." \
     || echo "[!] Referee extraction failed (non-fatal); predictions intact."
 
+# 7. Cards market (Paso 6 / Fase E) — isolated head; ON by default after gate.
+# Skip with CARDS_ENABLED=0. Non-fatal; never touches 1X2 / O/U picks or bankrolls.
+if [ "${CARDS_ENABLED:-1}" != "0" ]; then
+    echo ""
+    echo "[*] Running cards predictions for $DATE..."
+    python3 -m ml_project.cards.predict_cards "$DATE" \
+        && echo "[+] Cards prediction complete." \
+        || echo "[!] Cards prediction failed (non-fatal); 1X2/O/U intact."
+fi
+
 echo ""
 echo "========================================"
 echo "           Pipeline Finished            "

@@ -38,8 +38,12 @@ def normalize(name):
 
 def _lookup_match_result(bet, results_map, result_keys):
     """Find the bet's match in the results map (direct then fuzzy ≥80).
-    Returns (final_score_str, res_1x2, res_ou) or None if no result is
-    available yet / malformed. Pure lookup — no mutation."""
+
+    Returns (final_score_str, res_1x2, res_ou, res_cards) or None if no
+    result is available yet / malformed. `res_cards` is 'OVER'/'UNDER' when
+    yellow totals are known, else None (Cards bets must stay OPEN until then).
+    Pure lookup — no mutation.
+    """
     home = bet.get('home')
     if not home and bet.get('match'):
         m_str = bet.get('match')
@@ -64,11 +68,31 @@ def _lookup_match_result(bet, results_map, result_keys):
         return None
     res_1x2 = "1" if h_score > a_score else ("2" if a_score > h_score else "X")
     res_ou = "OVER" if (h_score + a_score) > 2.5 else "UNDER"
-    return (f"{h_score}-{a_score}", res_1x2, res_ou)
+    res_cards = None
+    hy = result_data.get('hy', result_data.get('yellow_home'))
+    ay = result_data.get('ay', result_data.get('yellow_away'))
+    try:
+        if hy is not None and ay is not None and str(hy) != '' and str(ay) != '':
+            total_y = float(hy) + float(ay)
+            # Import lazily so resolve still works if cards package moves.
+            try:
+                from cards.constants import CARD_LINE
+            except ImportError:
+                try:
+                    from ml_project.cards.constants import CARD_LINE
+                except ImportError:
+                    CARD_LINE = 3.5
+            res_cards = "OVER" if total_y > CARD_LINE else "UNDER"
+    except (TypeError, ValueError):
+        res_cards = None
+    return (f"{h_score}-{a_score}", res_1x2, res_ou, res_cards)
 
-def _selection_won(bet_type, selection, res_1x2, res_ou):
-    """True if the bet's selection won at full time, given the resolved
-    1X2 / O-U outcomes. Mirrors the inline logic used at settlement."""
+def _selection_won(bet_type, selection, res_1x2, res_ou, res_cards=None):
+    """True if the bet's selection won at full time.
+
+    For Cards: returns None when yellow totals are unknown (caller must leave
+    the bet OPEN). False/True only when res_cards is set.
+    """
     if bet_type == '1X2':
         sel = str(selection).upper()
         if sel in ('HOME', '1'): sel = '1'
@@ -80,6 +104,13 @@ def _selection_won(bet_type, selection, res_1x2, res_ou):
         if 'OVER' in sel: sel = 'OVER'
         elif 'UNDER' in sel: sel = 'UNDER'
         return sel == res_ou
+    if bet_type in ('Cards', 'CARDS', 'Cards O/U'):
+        if res_cards is None:
+            return None  # unknown — do not settle
+        sel = str(selection).upper()
+        if 'OVER' in sel: sel = 'OVER'
+        elif 'UNDER' in sel: sel = 'UNDER'
+        return sel == res_cards
     return False
 
 def load_verification_csv(filepath):
@@ -99,16 +130,57 @@ def load_verification_csv(filepath):
                 try:
                     h_score = int(parts[0])
                     a_score = int(parts[1])
-                    results_map[normalize(home)] = {
+                    entry = {
                         'home_team': home, 
                         'home_score': h_score, 
                         'away_score': a_score
                     }
+                    # Optional yellow columns if present on verification CSV.
+                    for src, dst in (('HY', 'hy'), ('AY', 'ay'),
+                                     ('Yellow Home', 'hy'), ('Yellow Away', 'ay')):
+                        if src in row and pd.notna(row.get(src)):
+                            entry[dst] = row.get(src)
+                    results_map[normalize(home)] = entry
                 except: pass
         return results_map
     except Exception as e:
         print(f"Error loading CSV {filepath}: {e}")
         return {}
+
+
+def _enrich_results_with_cards(results_map, target_date=None):
+    """Attach hy/ay from data_sets/referees/referee_matches.csv when known.
+
+    Matches by normalised home name (+ optional date filter). Only fills
+    missing hy/ay — never overwrites. Returns count enriched.
+    """
+    ref_csv = os.path.join(_HERE, '..', 'data_sets', 'referees', 'referee_matches.csv')
+    if not os.path.exists(ref_csv) or not results_map:
+        return 0
+    try:
+        df = pd.read_csv(ref_csv)
+    except Exception:
+        return 0
+    if 'hy' not in df.columns or 'ay' not in df.columns:
+        return 0
+    if target_date and 'date' in df.columns:
+        df = df[df['date'].astype(str).str.startswith(str(target_date))]
+    enriched = 0
+    for _, row in df.iterrows():
+        if pd.isna(row.get('hy')) or pd.isna(row.get('ay')):
+            continue
+        key = normalize(row.get('home'))
+        if not key or key not in results_map:
+            continue
+        entry = results_map[key]
+        if entry.get('hy') is not None and entry.get('ay') is not None:
+            continue
+        entry['hy'] = row['hy']
+        entry['ay'] = row['ay']
+        enriched += 1
+    if enriched:
+        print(f"Enriched {enriched} result(s) with yellow cards from referee catalog.")
+    return enriched
 
 def resolve_all_bets(bets_dir, results_file=None, verification_file=None, config_file="data_sets/betting_config.json"):
     """Settle OPEN bets across every bets_*.json in `bets_dir` against
@@ -147,6 +219,11 @@ def resolve_all_bets(bets_dir, results_file=None, verification_file=None, config
     if verification_file:
         csv_map = load_verification_csv(verification_file)
         results_map.update(csv_map)
+
+    # Enrich with yellow cards from the referee catalog when present
+    # (MatchHistory seed rows). Forward verification rows usually lack hy/ay
+    # — Cards bets stay OPEN until those appear.
+    _enrich_results_with_cards(results_map, target_date=extract_date_from_filename(results_file) if results_file else None)
 
     if not results_map:
         print("No results loaded. Cannot resolve bets.")
@@ -226,11 +303,14 @@ def resolve_all_bets(bets_dir, results_file=None, verification_file=None, config
                 if 'settlement_result' not in bet:
                     looked = _lookup_match_result(bet, results_map, result_keys)
                     if looked is not None:
-                        final_score, res_1x2, res_ou = looked
+                        final_score, res_1x2, res_ou, res_cards = looked
                         bet['final_score'] = final_score
-                        bet['settlement_result'] = (
-                            'WON' if _selection_won(bet.get('type'), bet.get('selection'),
-                                                    res_1x2, res_ou) else 'LOST')
+                        won = _selection_won(bet.get('type'), bet.get('selection'),
+                                             res_1x2, res_ou, res_cards)
+                        if won is None:
+                            pass  # Cards without yellows — leave unset
+                        else:
+                            bet['settlement_result'] = 'WON' if won else 'LOST'
                 continue
 
             # --- OPEN bet: settle against the result, or leave OPEN ---
@@ -238,14 +318,21 @@ def resolve_all_bets(bets_dir, results_file=None, verification_file=None, config
             if looked is None:
                 pending_now += 1
                 continue  # no result yet / malformed — leave OPEN, retry next run
-            final_score, res_1x2, res_ou = looked
+            final_score, res_1x2, res_ou, res_cards = looked
 
             stake = float(bet.get('stake', bet.get('stake_units', 0)))
             odd = float(bet.get('odd', bet.get('odds', 1.0)))
             bet['final_score'] = final_score
             bet['result_1x2'] = res_1x2
             bet['result_ou'] = res_ou
-            won = _selection_won(bet.get('type'), bet.get('selection'), res_1x2, res_ou)
+            if res_cards is not None:
+                bet['result_cards'] = res_cards
+            won = _selection_won(bet.get('type'), bet.get('selection'),
+                                 res_1x2, res_ou, res_cards)
+            # Cards without yellow totals: leave OPEN (do not invent LOST).
+            if won is None:
+                pending_now += 1
+                continue
 
             lane = bet.get('lane', 'value')
             if lane not in LANES:

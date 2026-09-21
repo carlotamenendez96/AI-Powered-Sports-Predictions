@@ -1,11 +1,13 @@
 """Model registry — the swappable-estimator seam.
 
 Single source of truth for the model families the pipeline can train and
-serve, across all three football heads:
+serve, across football heads:
 
-  '1x2'  — multiclass P(H/D/A)        (predict_proba -> (n, 3))
-  'ou'   — Over/Under 2.5 goal count  (predict      -> lambda, Poisson mean)
-  'draw' — binary P(draw)             (predict_proba -> (n, 2))   [trained only]
+  '1x2'         — multiclass P(H/D/A)        (predict_proba -> (n, 3))
+  'ou'          — Over/Under 2.5 goal count  (predict      -> lambda, Poisson mean)
+  'draw'        — binary P(draw)             (predict_proba -> (n, 2))   [trained only]
+  'cards'       — binary P(HY+AY > 3.5)      (predict_proba -> (n, 2))   [Paso 6]
+  'cards_total' — Poisson total yellows      (predict      -> lambda)   [Paso 6 diagnostic]
 
 Each family is a `ModelSpec` exposing a uniform contract: build a fresh
 estimator, plus the metadata the pipeline needs to prepare features for it —
@@ -153,6 +155,46 @@ def _logreg_draw():
 
 
 # --------------------------------------------------------------------------- #
+# Cards factories (Paso 6 — isolated from 1X2 / O/U production)
+# --------------------------------------------------------------------------- #
+def _xgb_cards():
+    import xgboost as xgb
+    # Conservative binary config — no 6-stage tune in v1.
+    return xgb.XGBClassifier(
+        objective='binary:logistic', n_estimators=120, learning_rate=0.05,
+        max_depth=4, min_child_weight=5, subsample=0.8, colsample_bytree=0.7,
+        gamma=1.0, eval_metric='logloss', tree_method='hist',
+        enable_categorical=True, random_state=0,
+    )
+
+
+def _logreg_cards():
+    return Pipeline([
+        ('impute', SimpleImputer(strategy='median')),
+        ('scale', StandardScaler()),
+        ('clf', LogisticRegression(max_iter=2000, C=1.0)),
+    ])
+
+
+def _xgb_cards_total():
+    import xgboost as xgb
+    return xgb.XGBRegressor(
+        objective='count:poisson', n_estimators=120, learning_rate=0.05,
+        max_depth=4, min_child_weight=5, subsample=0.8, colsample_bytree=0.7,
+        gamma=1.0, eval_metric='poisson-nloglik', tree_method='hist',
+        enable_categorical=True, random_state=0,
+    )
+
+
+def _poisson_glm_cards_total():
+    return Pipeline([
+        ('impute', SimpleImputer(strategy='median')),
+        ('scale', StandardScaler()),
+        ('reg', PoissonRegressor(max_iter=1000)),
+    ])
+
+
+# --------------------------------------------------------------------------- #
 # Registry — REGISTRY[market][family]
 # --------------------------------------------------------------------------- #
 REGISTRY: dict[str, dict[str, ModelSpec]] = {
@@ -176,6 +218,20 @@ REGISTRY: dict[str, dict[str, ModelSpec]] = {
         'logreg': ModelSpec('logreg', 'draw', 'binary', _logreg_draw, False,
                             'Impute+scale+logistic regression (baseline).'),
     },
+    'cards': {
+        'xgboost': ModelSpec('xgboost', 'cards', 'binary', _xgb_cards, True,
+                             'Paso 6 binary:logistic GBT for P(HY+AY > 3.5).'),
+        'logreg': ModelSpec('logreg', 'cards', 'binary', _logreg_cards, False,
+                            'Impute+scale+logistic baseline for cards over-line.'),
+    },
+    'cards_total': {
+        'xgboost': ModelSpec('xgboost', 'cards_total', 'poisson',
+                             _xgb_cards_total, True,
+                             'Paso 6 diagnostic Poisson GBT on total yellows.'),
+        'poisson_glm': ModelSpec('poisson_glm', 'cards_total', 'poisson',
+                                 _poisson_glm_cards_total, False,
+                                 'Impute+scale+Poisson GLM baseline for total yellows.'),
+    },
 }
 
 
@@ -198,8 +254,13 @@ def available(market: str) -> list[str]:
 # a head; loaders fall back to the legacy XGBoost JSON so a pre-seam checkout
 # is unchanged.
 # --------------------------------------------------------------------------- #
-_LEGACY = {'1x2': 'xgb_model_1x2.json', 'ou': 'xgb_model_ou.json',
-           'draw': 'xgb_model_draw.json'}
+_LEGACY = {
+    '1x2': 'xgb_model_1x2.json',
+    'ou': 'xgb_model_ou.json',
+    'draw': 'xgb_model_draw.json',
+    'cards': 'xgb_model_cards.json',
+    'cards_total': 'xgb_model_cards_total.json',
+}
 
 
 def _meta_name(market: str) -> str:
@@ -234,8 +295,9 @@ def _load_estimator(market: str, models_dir: str):
 
     if family == 'xgboost':
         import xgboost as xgb
-        # 1x2/draw are classifiers; ou is a regressor.
-        est = xgb.XGBRegressor() if market == 'ou' else xgb.XGBClassifier()
+        # Classifiers: 1x2 / draw / cards. Regressors: ou / cards_total.
+        is_regressor = market in ('ou', 'cards_total')
+        est = xgb.XGBRegressor() if is_regressor else xgb.XGBClassifier()
         est.load_model(artifact)
     else:
         import joblib
@@ -254,3 +316,8 @@ def load_ou_model(models_dir: str = 'models'):
     """Load the serving O/U estimator (predict -> Poisson lambda). Same
     family/categorical contract as the 1X2 loader."""
     return _load_estimator('ou', models_dir)
+
+
+def load_cards_model(models_dir: str = 'models'):
+    """Load the serving cards over-line estimator (predict_proba -> (n, 2))."""
+    return _load_estimator('cards', models_dir)

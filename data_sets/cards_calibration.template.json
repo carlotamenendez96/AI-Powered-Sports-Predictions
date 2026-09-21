@@ -1,0 +1,13 @@
+{
+  "market": "cards",
+  "kind": "global_platt",
+  "accepted": false,
+  "rejection_reason": "template — run ml_project.cards.calibration after train_cards",
+  "platt": {
+    "over": {"a": 1.0, "b": 0.0}
+  },
+  "n": 0,
+  "before": {},
+  "after": {},
+  "note": "Live file data_sets/cards_calibration.json is gitignored. Seed by copying this template or by fitting OOF preds."
+}

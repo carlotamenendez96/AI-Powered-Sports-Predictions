@@ -357,6 +357,8 @@
                                     {% set _final_text = '1' if _h > _a else ('2' if _a > _h else 'X') %}
                                     {% elif bet.type in ['O/U', 'OU2.5'] %}
                                     {% set _final_text = 'Over 2.5' if (_h + _a) > 2 else 'Under 2.5' %}
+                                    {% elif bet.type in ['Cards', 'CARDS'] %}
+                                    {% set _final_text = bet.result_cards if bet.result_cards is defined and bet.result_cards else None %}
                                     {% endif %}
                                 {% endif %}
                                 <td title="Actual match result in this bet's market — green if it matches your selection, red if not.">
@@ -460,7 +462,7 @@
             tr.innerHTML = `
                 <td class="small">${b.match}</td>
                 <td class="small text-nowrap text-muted">${b.time || '—'}</td>
-                <td><span class="badge ${b.type === '1X2' ? 'bg-secondary' : 'bg-info text-dark'}">${b.type}</span></td>
+                <td><span class="badge ${b.type === '1X2' ? 'bg-secondary' : (b.type === 'Cards' ? 'bg-warning text-dark' : 'bg-info text-dark')}">${b.type}${b.odds_source === 'synthetic' ? '≈' : ''}</span></td>
                 <td class="fw-bold">${b.selection}</td>
                 <td>${b.odds}</td>
                 <td>${b.conf}</td>
