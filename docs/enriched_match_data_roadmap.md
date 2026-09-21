@@ -84,7 +84,7 @@ buscar un dump externo). No asumir un CSV mágico el día 1: el histórico se
 | --- | --- | --- |
 | Predicción 1X2 + O/U 2.5 | Producción | `run_predictions.sh` |
 | Standings / form | Producción | `update_leagues_data.sh` |
-| Justificación nivel 1 (probs/ELO/EV + bajas) | Hecho (Paso 2) | `justify_predictions.py` lee `availability_*.json`; contexto tipster, no input del pick |
+| Justificación nivel 1 (probs/ELO/EV + bajas + árbitro) | Hecho (Pasos 2+5) | `justify_predictions.py` lee `availability_*.json` + `referees_*.json` + catálogo; contexto tipster, no input del pick |
 | Bajas / “Will not play” Flashscore | **Cableado en `run_predictions.sh` (paso no fatal) — validando 1ª semana** | `scripts/d4_injuries/extract_availability.py` → `output/availability_<date>.json` |
 | Importancia jugador (SoFIFA OVR) | Hecho pero D4 aparcado (OVR ≠ impacto) | `ml_project/availability/sofifa_importance.py` |
 | Adjuster 1X2 por bajas | No hecho (shelved N3) | No priorizar hasta medir |
@@ -261,12 +261,33 @@ Cada paso tiene: **qué**, **por qué**, **entregable**, **criterio de listo**,
   otra fuente) para el resto de ligas.
 * **Siguiente:** Paso 5.
 
+
 ### Paso 5 — Justificación + árbitro (texto)
 
-* **Qué:** Incluir en la justificación: nombre + resumen corto del histórico
-  (p.ej. media de amarillas en últimos K partidos).
-* **Por qué:** Cierra el loop tipster con hechos; prepara Telegram.
+* **Estado (2026-09-21): hecho.** `scripts/justify_predictions.py`
+  (`level1+availability+referee-v1`) lee:
+  - `output/referees_<date>.json` (Paso 3) → nombre (+ país si viene),
+  - `data_sets/referees/referee_matches.csv` (Paso 4) → tasas solo si el
+    árbitro tiene **≥ 20** partidos con columnas de tarjetas en el catálogo.
+* **Comportamiento (no inventa cifras):**
+  - Con tasas: *«Árbitro: Taylor A. (Eng). Histórico local: 3.9 amarillas/partido ·
+    6% con ≥1 roja · 9.8 córners/partido (n=31)…»*
+  - Sin tasas (casi toda la slate diaria fuera de ENG/SCO hoy): *«Árbitro: …
+    Sin tasas / histórico insuficiente… Solo nombre Flashscore»*
+  - Sin `referees_<date>.json` o `referee_name=null`: no añade bloque.
+* **Qué NO hace:** no toca el pick 1X2/O/U ni `predict_matches.py`. El texto
+  deja claro que es contexto tipster.
+* **Cómo regenerar:**
+  ```bash
+  python3 scripts/justify_predictions.py --date YYYY-MM-DD --print
+  ```
+  (requiere haber corrido predicciones + `extract_referees` ese día; el
+  catálogo ya está seedeado desde Paso 4).
 * **Listo cuando:** UI/Telegram muestran bloque árbitro sin inventar cifras.
+  Cumplido en JSON/TXT; la columna Justification de la UI lo lee del mismo
+  fichero que antes.
+* **Siguiente:** Paso 6 solo cuando haya producto/mercado de tarjetas; mientras,
+  validar §4.1 (bajas) y opcionalmente sembrar más temporadas ENG/SCO.
 
 ### Paso 6 — Mercado tarjetas (Fase E) — solo después de 3–4
 
@@ -424,7 +445,7 @@ meterlas en `predict_matches` / heurísticas / features de train.
 ./bin/run_predictions.sh                              # incluye extract_availability + extract_referees
 # python3 scripts/d4_injuries/extract_availability.py YYYY-MM-DD  # solo si hace falta re-correr
 # python3 scripts/d4_referees/extract_referees.py YYYY-MM-DD      # solo si hace falta re-correr
-python3 scripts/justify_predictions.py                # Pasos 2+5
+python3 scripts/justify_predictions.py                # Pasos 2+5 (bajas + árbitro)
 # opcional: Telegram con justificaciones enriquecidas
 
 # al día siguiente
@@ -466,15 +487,16 @@ Semanal: `./bin/retrain_pipeline.sh` sigue siendo solo el modelo
 
 **Ahora:** validar la 1ª semana de bajas (§4.1) mientras sigue la cadencia
 diaria (`run_predictions` → availability → referees → `justify_predictions`).
-El histórico de árbitros (Paso 4) ya está hecho y crece solo cada
-`run_verification.sh`; no requiere atención diaria salvo, opcionalmente,
-sembrar más temporadas ENG/SCO (`bin/setup_data.sh 2324` / `2425`).
+Pasos 3–5 (árbitro del día + histórico + texto) ya están hechos; el
+histórico crece solo en cada `run_verification.sh`.
 
-En paralelo o después: **Paso 5** (justificación + árbitro, texto) — ya hay
-datos suficientes en árbitros ENG/SCO frecuentes para citar una tasa real.
+Opcional: sembrar más temporadas ENG/SCO (`bin/setup_data.sh 2324` /
+`2425`) para que más árbitros crucen el umbral de tasas en la justificación.
 
 **No** implementar Paso 8 (adjuster) hasta gate §4.1 abierto.
+**No** saltar a Paso 6 (mercado tarjetas) sin decidir producto + más
+cobertura de box score.
 
-Frase de arranque para el agente: *“Implementa el Paso 5 del roadmap
-docs/enriched_match_data_roadmap.md”* — o, si el gate está cerrado:
-*“Ayúdame a rellenar / automatizar el checklist §4.1 del roadmap”*.
+Frase de arranque para el agente: *“Ayúdame a rellenar / automatizar el
+checklist §4.1 del roadmap”* — o, si el gate está abierto y quieres
+mercados nuevos: *“Implementa el Paso 6 del roadmap…”*.
