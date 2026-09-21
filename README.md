@@ -91,6 +91,13 @@ Los datos **no se actualizan solos**. `./bin/setup_data.sh` es solo el arranque 
 
 Orden típico del día: update standings → predict (noche antes) → verify (cuando hayan acabado los partidos de ayer).
 
+**Opcional — justificaciones (texto en español, nivel 1):**
+```bash
+python3 scripts/justify_predictions.py              # latest predictions_*.csv
+python3 scripts/justify_predictions.py --date YYYY-MM-DD --print
+```
+Escribe `output/justifications_<date>.{json,txt}` a partir de probs/cuotas/ELO/heurísticas (sin lesiones ni árbitro). Al abrir el CSV de predicciones en la UI, la columna **Justification** aparece si existe ese JSON.
+
 ### CLI Commands (NBA)
 *   **Run Prediction** (Tomorrow's Matches):
     ```bash

@@ -1733,6 +1733,38 @@ def view_file(filename):
     try:
         df = pd.read_csv(filepath)
         df = df.fillna('')  # Ensure NaNs are empty strings so template .split() works
+
+        # Level-1 justifications companion (scripts/justify_predictions.py).
+        # Join onto prediction rows when viewing predictions_*.csv.
+        if filename.startswith('predictions_') and filename.endswith('.csv'):
+            date_key = filename[len('predictions_'):-len('.csv')]
+            just_path = os.path.join(OUTPUT_DIR, f'justifications_{date_key}.json')
+            if os.path.isfile(just_path):
+                try:
+                    with open(just_path, encoding='utf-8') as jf:
+                        blob = json.load(jf)
+                    by_id = {}
+                    by_teams = {}
+                    for m in blob.get('matches') or []:
+                        jtxt = (m.get('justification') or '').replace('**', '')
+                        mid = str(m.get('match_id') or '').strip()
+                        if mid:
+                            by_id[mid] = jtxt
+                        key = (str(m.get('home') or ''), str(m.get('away') or ''))
+                        by_teams[key] = jtxt
+                    just_col = []
+                    for _, row in df.iterrows():
+                        mid = str(row.get('match_id') or '').strip()
+                        txt = by_id.get(mid)
+                        if not txt:
+                            txt = by_teams.get(
+                                (str(row.get('Home Team') or ''), str(row.get('Away Team') or '')),
+                                '',
+                            )
+                        just_col.append(txt)
+                    df['Justification'] = just_col
+                except (OSError, json.JSONDecodeError, TypeError) as e:
+                    print(f"[view] could not load justifications: {e}")
         
         # Load Cumulative Stats from JSON
         league_stats = []
@@ -1770,7 +1802,7 @@ def view_file(filename):
         # Define Preferred Order
         # prediction_cols starts with basic info
         # prediction_cols starts with basic info
-        base_cols = ['Date', 'League', 'Home Team', 'Away Team', 'Home', 'Away', 'Score']
+        base_cols = ['Date', 'League', 'Home Team', 'Away Team', 'Home', 'Away', 'Score', 'Justification']
         
         # User requested 1x2 cluster then O/U cluster
         target_cols = [
@@ -1778,7 +1810,7 @@ def view_file(filename):
             'Pred 1X2', 'Actual 1X2', 'Correct 1X2 Label', # Verification variants
             
             'Prediction O/U', 'Prediction O/U Odd', 'Conf O/U', 'EV O/U', 'Kelly O/U', 'Over %', 'Under %',
-            'Pred O/U', 'Actual O/U', 'Correct O/U Label' # Verification variants
+            'Pred O/U', 'Actual O/U', 'Correct O/U Label', # Verification variants
         ]
         
         final_cols = []

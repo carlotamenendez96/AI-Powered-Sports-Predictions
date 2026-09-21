@@ -120,7 +120,8 @@
                 {% endif %}
                 {% endif %}
 
-                <td class="{{ bg_class }}">
+                <td class="{{ bg_class }}{% if col == 'Justification' %} text-wrap small{% endif %}"
+                    {% if col == 'Justification' %}style="min-width:22rem;max-width:36rem;white-space:normal;"{% endif %}>
                     {% if col in ['Home Form', 'Away Form'] and val %}
                     {% for res in val.split(',') %}
                     {% if res == 'W' %}
@@ -133,6 +134,8 @@
                     <small class="text-muted">{{ res }}</small>
                     {% endif %}
                     {% endfor %}
+                    {% elif col == 'Justification' and val %}
+                    <span class="text-body-secondary">{{ val }}</span>
                     {% else %}
                     {{ val }}
                     {% endif %}
