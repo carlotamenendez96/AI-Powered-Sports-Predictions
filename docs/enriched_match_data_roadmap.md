@@ -89,7 +89,7 @@ buscar un dump externo). No asumir un CSV mágico el día 1: el histórico se
 | Importancia jugador (SoFIFA OVR) | Hecho pero D4 aparcado (OVR ≠ impacto) | `ml_project/availability/sofifa_importance.py` |
 | Adjuster 1X2 por bajas | No hecho (shelved N3) | No priorizar hasta medir |
 | Árbitro del partido | **Cableado en `run_predictions.sh` (paso no fatal)** | `scripts/d4_referees/extract_referees.py` → `output/referees_<date>.json` |
-| Histórico árbitros (tarjetas…) | No existe | Fase B–C |
+| Histórico árbitros (tarjetas…) | **Hecho (2026-09-21) — capa de datos** | `scripts/referees/build_referee_history.py` → `data_sets/referees/{referee_matches.csv,referees.json}`. Ver Paso 4. |
 | Modelo / mercado tarjetas | No existe | Fase E |
 | Modelo / mercado córners | No existe | Fase F |
 
@@ -171,16 +171,94 @@ Cada paso tiene: **qué**, **por qué**, **entregable**, **criterio de listo**,
 
 ### Paso 4 — Histórico de árbitros (Fase B–C, catálogo)
 
-* **Qué:** Tabla acumulativa `referee_matches.csv` (o JSONL) con, por partido
-  pitado: tarjetas, rojas, resultado, liga, fecha; opcional corners/faltas.
-  Crecer: (a) al verificar ayer, guardar stats del partido + árbitro; y/o
-  (b) backfill de partidos recientes por liga.
+* **Estado (2026-09-21): hecho — capa de datos, sin modelo.**
+  `scripts/referees/build_referee_history.py` (self-contained, no toca
+  `ml_project` ni el modelo). Dos fuentes que conviven en el mismo CSV vía
+  la columna `source`:
+
+  **(A) Seed / backfill** — `--seed-from-matchhistory [--since YYYY-MM-DD]
+  [--seasons N]`, desde `data_sets/MatchHistory/*.csv` (columnas
+  football-data.co.uk: `Referee, HY, AY, HR, AR, HC, AC`). Idempotente
+  (dedup por `match_key = mh:<liga>:<fecha>:<home>:<away>`, upsert
+  last-write-wins) — re-ejecutar no duplica filas.
+
+  **(B) Forward / append** — `--append-verification YYYY-MM-DD`, cableado
+  como **paso 7, no fatal**, en `bin/run_verification.sh` (justo después de
+  resolver apuestas). Cruza tres ficheros del mismo día:
+  `output/referees_<date>.json` (D4 Paso 3 — quién pitó), `output/results_<date>.json`
+  (marcador) y `output/predictions_<date>.csv` (liga/equipos canónicos, porque
+  `results_<date>.json` en modo verificación por ID trae `home_team`/`away_team`
+  poco fiables — a veces ambos iguales al equipo local). Idempotente
+  (`match_key = fs:<match_id>`). **Si Paso 3 no corrió ese día, o el
+  árbitro salió `null`, o no hay `results_<date>.json` todavía, se salta y
+  lo dice — nunca rompe la verificación** (`|| true` en el wrapper + manejo
+  interno que retorna 0).
+
+* **Limitación honesta — las filas forward NO llevan tarjetas.** Flashscore
+  en modo verificación (`mode=verification`, el que usa `run_verification.sh`)
+  solo expone el marcador final, no el box score. Las filas `source=verification`
+  tienen `hy/ay/hr/ar/hc/ac` vacíos; solo sirven para saber **quién pitó
+  qué** (útil para "¿cuántos partidos lleva pitados X esta temporada?"),
+  no para tasas de tarjetas. Las tasas de tarjetas solo existen donde hay
+  backfill de MatchHistory (ver cobertura abajo).
+
+* **Cobertura real de MatchHistory (`--coverage`, 2026-09-21):** de 38
+  ficheros, **9/38 tienen columna `Referee`** — únicamente ENG (Premier
+  League, Championship, League 1, League 2, Conference) y SCO (Premier
+  League, Division 1-3). El resto de "main leagues" con sufijo de temporada
+  (ESP, FRA, GER, ITA, NED, BEL, POR, TUR, GR) **no** traen `Referee` en la
+  fuente — no es un bug del downloader, football-data.co.uk simplemente no
+  la publica para esas ligas. Las "extra leagues" consolidadas desde `/new/`
+  (ARG, AUT, BRA, CHN, DEN, FIN, IRL, JPN, MEX, NOR, POL, ROU, RUS, SUI,
+  SWE, USA) tampoco. Para esas ligas **no hay backfill posible**: el
+  histórico de esos árbitros solo puede crecer hacia delante, y sin
+  tarjetas (ver limitación arriba).
+
+  Solo hay **una temporada (25-26)** de los ficheros con `Referee` en este
+  disco hoy — `bin/setup_data.sh` descarga por temporada y no se han traído
+  25-26 ni 23-24. Primer `--seed-from-matchhistory` (2026-09-21): **3.356
+  filas**, **172 árbitros distintos**. `--stats "E Duckworth"` (el más
+  frecuente, 37 partidos) devuelve 3.89 amarillas/partido, 16.2% de
+  partidos con roja, 8.95 córners/partido — tasas no triviales, no ceros.
+
+* **Cómo sembrar 3 temporadas (ENG/SCO):**
+
+  ```bash
+  ./bin/setup_data.sh 2324   # descarga la temporada 23-24 (solo main leagues)
+  ./bin/setup_data.sh 2425   # 24-25
+  ./bin/setup_data.sh 2526   # 25-26 (probablemente ya en disco)
+  python3 scripts/referees/build_referee_history.py --seed-from-matchhistory
+  ```
+
+  Cada temporada llega en un fichero `<Liga>_AA-BB.csv` distinto (no se
+  pisan), así que el seed las recoge todas automáticamente. `--seasons N`
+  permite acotar a las N temporadas más recientes **por liga** si en algún
+  momento hay más de 3 en disco; `--since YYYY-MM-DD` filtra por fecha en
+  vez de por fichero.
+
+* **Esquema** (`data_sets/referees/`, gitignored — templates
+  `referee_matches.template.csv` / `referees.template.json` trackeados
+  para el esquema, mismo patrón que `betting_config.template.json`):
+  - `referee_matches.csv` — una fila por partido pitado: `match_key, date,
+    league, home, away, score_home, score_away, referee_name, referee_id,
+    hy, ay, hr, ar, hc, ac, source, ingested_at`.
+  - `referees.json` — índice derivado (se regenera entero desde el CSV en
+    cada run, no es una segunda fuente de verdad): `id/slug → {canonical_name,
+    aliases, n_matches, sources}`. El slug normaliza "Initial Surname"
+    (MatchHistory, `"A Taylor"`) y "Surname Initial." (Flashscore,
+    `"Letexier F."`) al mismo id cuando coinciden — best-effort, no es
+    resolución de entidades completa (dos árbitros con mismo apellido +
+    inicial colisionan).
 * **Por qué:** Un listado de nombres sin números no sirve; el valor está en
-  **tasas** (amarillas/90, % partidos con roja, etc.).
-* **Entregable:** Catálogo + ≥ N partidos/árbitro frecuente (definir N, p.ej.
-  20) antes de usar en tipster/modelo.
+  **tasas** (amarillas/partido, % partidos con roja, córners/partido).
+* **Entregable:** Catálogo + consulta local (`--stats NOMBRE`). El gate de
+  "≥ N partidos/árbitro" (p.ej. 20) antes de usar en tipster/modelo sigue
+  pendiente para Paso 5 — hoy solo hay una temporada, así que muchos
+  árbitros de ligas menores están por debajo de ese umbral.
 * **Listo cuando:** Puedes responder “¿cuántas amarillas/partido lleva X
-  esta temporada?” con query local.
+  esta temporada?” con query local. **Cumplido para árbitros ENG/SCO
+  frecuentes** (ver `E Duckworth` arriba); no cumplido (ni cumplible sin
+  otra fuente) para el resto de ligas.
 * **Siguiente:** Paso 5.
 
 ### Paso 5 — Justificación + árbitro (texto)
@@ -351,7 +429,8 @@ python3 scripts/justify_predictions.py                # Pasos 2+5
 
 # al día siguiente
 ./bin/run_verification.sh
-# + append stats del partido al histórico de árbitros (Paso 4)
+# incluye el append no fatal al histórico de árbitros (Paso 4, hecho):
+#   python3 scripts/referees/build_referee_history.py --append-verification YYYY-MM-DD
 ```
 
 Semanal: `./bin/retrain_pipeline.sh` sigue siendo solo el modelo
@@ -387,11 +466,15 @@ Semanal: `./bin/retrain_pipeline.sh` sigue siendo solo el modelo
 
 **Ahora:** validar la 1ª semana de bajas (§4.1) mientras sigue la cadencia
 diaria (`run_predictions` → availability → referees → `justify_predictions`).
+El histórico de árbitros (Paso 4) ya está hecho y crece solo cada
+`run_verification.sh`; no requiere atención diaria salvo, opcionalmente,
+sembrar más temporadas ENG/SCO (`bin/setup_data.sh 2324` / `2425`).
 
-En paralelo o después: **Paso 4** (histórico de árbitros / tarjetas).
+En paralelo o después: **Paso 5** (justificación + árbitro, texto) — ya hay
+datos suficientes en árbitros ENG/SCO frecuentes para citar una tasa real.
 
 **No** implementar Paso 8 (adjuster) hasta gate §4.1 abierto.
 
-Frase de arranque para el agente: *“Implementa el Paso 4 del roadmap
+Frase de arranque para el agente: *“Implementa el Paso 5 del roadmap
 docs/enriched_match_data_roadmap.md”* — o, si el gate está cerrado:
 *“Ayúdame a rellenar / automatizar el checklist §4.1 del roadmap”*.

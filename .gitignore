@@ -16,6 +16,18 @@ data_sets/*
 # Standings spider URL list — live copy is gitignored (local edits OK);
 # template is tracked so a fresh clone can seed it.
 !data_sets/standings_form_flashscore_direct_links.template.csv
+
+# D4 Paso 4 — referee history catalog (see docs/enriched_match_data_roadmap.md).
+# Live corpus grows from a MatchHistory backfill + daily verification append
+# (scripts/referees/build_referee_history.py) and regenerates deterministically,
+# so it stays local like the other caches above. `data_sets/*` already hides
+# the whole referees/ directory; re-allow it explicitly so the templates below
+# can be tracked.
+!data_sets/referees/
+data_sets/referees/*
+!data_sets/referees/referee_matches.template.csv
+!data_sets/referees/referees.template.json
+
 logs/
 output/
 output_basketball/

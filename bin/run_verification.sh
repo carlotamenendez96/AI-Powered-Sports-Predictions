@@ -138,7 +138,16 @@ else
     python3 ml_project/resolve_daily_bets.py --bets_dir output --results $RESULTS_JSON
 fi
 
-# 7. Collection health + backtest trigger. Both are reports and must never
+# 7. Referee history append (D4 Paso 4, ver docs/enriched_match_data_roadmap.md).
+#    Grows data_sets/referees/referee_matches.csv with today's officiated
+#    matches when the referee assignment is known (output/referees_$TARGET_DATE.json,
+#    D4 Paso 3). Non-fatal and self-skipping — if Paso 3 didn't run that day,
+#    or the results file is missing, it logs why and leaves the corpus alone.
+echo ""
+echo "[*] Referee history append..."
+python3 scripts/referees/build_referee_history.py --append-verification "$TARGET_DATE" || true
+
+# 8. Collection health + backtest trigger. Both are reports and must never
 #    break this pipeline, hence `|| true`. Settlement above is what turns a
 #    stored trajectory into a scoreable one, so this is the right moment to
 #    ask whether enough has accrued for a backtest re-run -- the trigger is
