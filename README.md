@@ -73,6 +73,24 @@ Start the UI to manage everything visually:
     ./bin/retrain_pipeline.sh
     ```
 
+### Cadencia operativa (fútbol)
+
+Los datos **no se actualizan solos**. `./bin/setup_data.sh` es solo el arranque (o cambio de temporada). El día a día es:
+
+**Diario** (activar venv antes: `source venv/bin/activate`):
+```bash
+./bin/update_leagues_data.sh   # standings/form → features a la hora de predecir
+./bin/run_predictions.sh       # scrape mañana + predicciones
+./bin/run_verification.sh      # al día siguiente: resultados de ayer + asienta apuestas
+```
+
+**Semanal** (p.ej. lunes):
+```bash
+./bin/retrain_pipeline.sh      # refresca CSVs historial + standings + reentrena + calibradores
+```
+
+Orden típico del día: update standings → predict (noche antes) → verify (cuando hayan acabado los partidos de ayer).
+
 ### CLI Commands (NBA)
 *   **Run Prediction** (Tomorrow's Matches):
     ```bash
@@ -145,6 +163,8 @@ Detailed guides in `docs/`:
 *   [Training Process](docs/training_process.md)
 *   [UI Manual](docs/ui_manual.md)
 *   [Codebase Overview](docs/codebase_overview.md)
+*   [Telegram notifications (GitHub Actions)](docs/telegram_notifications.md)
+*   [Server deployment](docs/server_deployment.md) — cuando quieras sacar el batch del Mac
 
 Project conventions, architecture, and pipeline details for Claude Code and human contributors:
 *   [`CLAUDE.md`](CLAUDE.md) — environment, common commands, architecture, data layout, operational cadence

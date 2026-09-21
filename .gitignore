@@ -13,6 +13,9 @@ data_sets/*
 # ml_project/config_bootstrap.py (also runnable directly).
 !data_sets/betting_config.template.json
 !data_sets/team_mappings.template.json
+# Standings spider URL list — live copy is gitignored (local edits OK);
+# template is tracked so a fresh clone can seed it.
+!data_sets/standings_form_flashscore_direct_links.template.csv
 logs/
 output/
 output_basketball/

@@ -10,7 +10,13 @@ class StandingsSpider(scrapy.Spider):
     
     def start_requests(self):
         csv_path = os.path.join(self.settings.get('PROJECT_ROOT', '.'), 'data_sets/standings_form_flashscore_direct_links.csv')
-        
+        if not os.path.isfile(csv_path):
+            raise FileNotFoundError(
+                f"Missing {csv_path}. Seed it from "
+                "data_sets/standings_form_flashscore_direct_links.template.csv "
+                "(bin/update_leagues_data.sh does this automatically)."
+            )
+
         with open(csv_path, 'r', encoding='utf-8-sig') as f:
             reader = csv.DictReader(f, delimiter=';')
             for row in reader:

@@ -9,8 +9,13 @@ VENV_PATH="venv/bin/activate"
 # Date for verification (default: yesterday)
 # Usage: ./run_verification.sh [YYYY-MM-DD]
 if [ -z "$1" ]; then
-    TARGET_DATE=$(date -v-1d +%Y-%m-%d) # MacOS version of 'yesterday'
-    # Linux would be: date -d "yesterday" +%Y-%m-%d
+    if date -v-1d >/dev/null 2>&1; then
+        # macOS
+        TARGET_DATE=$(date -v-1d +%Y-%m-%d)
+    else
+        # Linux (GitHub Actions / Ubuntu)
+        TARGET_DATE=$(date -d "yesterday" +%Y-%m-%d)
+    fi
 else
     TARGET_DATE=$1
 fi
@@ -77,7 +82,13 @@ fi
 
 # 3. Calculate Day Offset for Scraper (still useful as a sanity log).
 CURRENT_DATE_SEC=$(date +%s)
-TARGET_DATE_SEC=$(date -j -f "%Y-%m-%d" "$TARGET_DATE" +%s)
+if date -j -f "%Y-%m-%d" "$TARGET_DATE" +%s >/dev/null 2>&1; then
+    # macOS
+    TARGET_DATE_SEC=$(date -j -f "%Y-%m-%d" "$TARGET_DATE" +%s)
+else
+    # Linux
+    TARGET_DATE_SEC=$(date -d "$TARGET_DATE" +%s)
+fi
 DIFF_SEC=$((TARGET_DATE_SEC - CURRENT_DATE_SEC))
 DAY_DIFF=$(( (DIFF_SEC - 43200) / 86400 ))
 echo "[*] Target is $DAY_DIFF days from today. Running Scraper with ID-based mode..."

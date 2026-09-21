@@ -441,9 +441,7 @@ class FlashscoreSpider(scrapy.Spider):
         
         try:
             self.logger.info(f"Processing match {item['match_id']} odds.")
-            # debug screenshot
-            await page.screenshot(path=f"/Users/thodorischaros/.gemini/antigravity/brain/b595ea4f-41cb-4b5d-a284-d6c2acb923a3/debug_odds_{item['match_id']}.png")
-            
+
             # Extract Team Names from Title (Robust)
             if item['home_team'] == "Unknown Home":
                  title = await page.title()

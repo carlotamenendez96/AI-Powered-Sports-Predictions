@@ -41,6 +41,9 @@ DATA_SETS = os.path.join(PROJECT_ROOT, 'data_sets')
 SEEDED = {
     'betting_config.json': 'betting_config.template.json',
     'team_mappings.json': 'team_mappings.template.json',
+    # URL list for scrapy crawl standings (bin/update_leagues_data.sh).
+    'standings_form_flashscore_direct_links.csv':
+        'standings_form_flashscore_direct_links.template.csv',
 }
 
 
