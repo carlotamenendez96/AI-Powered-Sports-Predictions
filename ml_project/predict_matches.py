@@ -310,7 +310,8 @@ class MatchPredictor:
             
         predictions = []
         match_dates = set()
-        
+        unsupported = {}   # league -> fixtures dropped as neither NT nor club
+
         print(f"Predicting {len(upcoming_matches)} matches...")
         
         for match in upcoming_matches:
@@ -353,6 +354,14 @@ class MatchPredictor:
             }
             country_prefix = league_name.split(':')[0].upper().strip()
             if country_prefix not in SUPPORTED_COUNTRIES:
+                # Counted, not just dropped. A competition that is neither
+                # international (routed to the NT model above) nor in a
+                # supported country falls through BOTH predictors and vanishes
+                # with no message — which is exactly how AFCON was scraped for
+                # three days and predicted zero times after being whitelisted
+                # in target_leagues.json. The summary below makes the next one
+                # visible in the log instead of silent.
+                unsupported[league_name] = unsupported.get(league_name, 0) + 1
                 continue
 
             # Resolve Names
@@ -641,6 +650,13 @@ class MatchPredictor:
                 'match_id': match.get('match_id', '')
             })
 
+        if unsupported:
+            total = sum(unsupported.values())
+            print(f"[!] {total} fixture(s) predicted by NEITHER model — not a "
+                  f"national-team competition (nt_competitions.INTERNATIONAL_BASES) "
+                  f"and not a supported club country (SUPPORTED_COUNTRIES):")
+            for lg, n in sorted(unsupported.items(), key=lambda kv: -kv[1]):
+                print(f"      {n:>3}x  {lg}")
 
         # Save Logic (Same as before)
         if match_dates:
