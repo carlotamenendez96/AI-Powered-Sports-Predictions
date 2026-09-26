@@ -3,6 +3,7 @@ import zipfile
 import io
 import os
 import shutil
+import sys
 
 # Config
 BASE_URL = "https://www.football-data.co.uk/mmz4281"
@@ -67,7 +68,9 @@ def download_file(url):
         return None
 
 def update_data():
+    """Refresh the football-data.co.uk CSVs. Returns the number of files written."""
     print(f"[*] Starting Data Update for Season {SEASON_SUFFIX}...")
+    written = 0
     
     if not os.path.exists(TARGET_DIR):
         os.makedirs(TARGET_DIR)
@@ -91,6 +94,7 @@ def update_data():
                         
                         with open(target_path, 'wb') as f:
                             f.write(z.read(filename))
+                        written += 1
                         print(f"    -> Updated {target_name}")
         except Exception as e:
             print(f"[-] Error parsing zip: {e}")
@@ -109,9 +113,20 @@ def update_data():
             
             with open(target_path, 'wb') as f:
                 f.write(csv_content)
+            written += 1
             print(f"    -> Updated {target_name}")
 
-    print("\n[+] Update complete.")
+    expected = len(MAIN_MAPPING) + len(EXTRA_LEAGUES_MAP)
+    print(f"\n[+] Update complete. {written}/{expected} files written.")
+    return written
+
 
 if __name__ == "__main__":
-    update_data()
+    # Every download is wrapped in its own try/except, so a total outage (no
+    # network, football-data.co.uk down, URL scheme changed) used to print a
+    # wall of "[-] Failed to download" and still exit 0 — indistinguishable
+    # from success to any caller. run_predictions.sh now chains this step, so
+    # it needs a real exit code: nothing written is a failure.
+    if update_data() == 0:
+        print("[-] No files were written — every download failed. See errors above.")
+        sys.exit(1)
