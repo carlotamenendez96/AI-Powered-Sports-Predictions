@@ -270,7 +270,25 @@ Placeholder card first (mirrors NBA Phase A), real panel once the moneyline flow
 
 Verified end to end afterwards: `./bin/run_euroleague_predictions.sh 2026-09-29` → 13 fixtures (8 E + 5 U), 13 predictions, per-competition Platt applied, exit 0. **EuroCup fixtures work through the schedule endpoint** even though its game-report call still raises, so the tolerate-one-competition rule is what keeps it usable. Calibration is compressing hard on this slate (raw 0.23–0.80 → calibrated 0.46–0.70) but is **order-preserving within each competition** — not the ordering inversion that got football's calibration disabled. Worth re-checking once the season accrues settled games.
 
-**Still open**: no odds source, so `auto_wager` yields empty slips (see Phase 3 note and "Open / deferred"). Models are still the May fit — no retrain was run, and none is needed until the new season accrues games.
+**Odds probe — ✅ BUILT (2026-09-27)**, `ml_project/euroleague/fetch_euroleague_odds.py`, wired non-fatally into `bin/run_euroleague_predictions.sh` between fixtures and predict. Flashscore, both competitions, moneyline + totals. This closes the Phase 0 "Flashscore Euroleague coverage probe" deferred to season start.
+
+**It is a ladder, not a line — the central design point.** Football's O/U is a fixed 2.5; basketball totals are not. Each book posts its own line *and* its own prices, and Flashscore lists all of them: 17–19 rows spanning ~162.5–179.5 on a EuroLeague game, sometimes three books on the same 169.5 at different prices. **Line and price must come from the same row** — mixing one book's line with another's price records a bet nobody offered. Every row carries its own `book`, and the full ladder is persisted (operator's call) so the selection policy can change, and be *measured*, without re-scraping.
+
+Schema per match: `moneyline[] {book, home, away}`, `totals[] {book, line, over, under}`, plus back-compatible scalars (`home_ml_decimal`/`away_ml_decimal`/`total`/`over_ml_decimal`/`under_ml_decimal` + `ml_book`/`total_book`) so the existing predictor and `auto_wager` work unchanged. Scalars use book preference **bwin → bet365 → Stoiximan → PameStoixima → Novibet** for the moneyline, and for totals the **main line** = the row with the most balanced over/under prices (book preference only as tie-break).
+
+Four things learned, each now guarded in code:
+
+- **Market coverage differs by book.** Moneyline carries 5 books *including PameStoixima* — the book `real_betting/` drives — but totals carry only 3 (bet365, Stoiximan, Bwin) and **PameStoixima is absent**. So our own book can price the ML but not the total.
+- **`ft-including-ot`, never `full-time`.** Both tabs exist; basketball settles including overtime, so the wrong tab mis-settles every OT game.
+- **A failed odds tab silently serves the STANDINGS table.** `.ui-table__row` matches it just as happily: `Lietkabelis v KK Bosna` (2026-09-30) produced 8 "totals" whose book was a team name, whose line was the league rank (1,2,3…) and whose prices were 0.0. Plausibility bounds (`MIN/MAX_DECIMAL_ODDS`, `MIN/MAX_TOTAL_LINE`) now discard those and report the count; that match correctly reports 0 ML / 0 totals.
+- **The fixture join needs a margin, not a threshold.** Flashscore short names vs the API's sponsor-laden ones: the worst true pair was `Venezia v Frankfurt` → `UMANA REYER VENICE v SKYLINERS FRANKFURT` at just **66**. But across all 13 pairs the correct fixture won by **37–72 points** and no runner-up exceeded 46, so acceptance is a modest floor (60) *plus* a margin over the runner-up (20). 13/13 joined.
+- A partial run (`--competition U`) used to overwrite the file and drop the other competition's records (13 → 5). Writes now **merge** on `flashscore_match_id`.
+
+**⚠️ EuroCup totals look biased high — check before betting them.** On the 2026-09-29 slate, mean `Predicted Total − line` was **−0.29 for EuroLeague (n=8, 4/8 overs)** but **+7.77 for EuroCup (n=5, range −5.7…+17.1, 4/5 overs)**. Small n, but consistent with the total regressor never getting a Platt fit ("diagnostic only, well-calibrated") — an assessment made on pooled E+U OOF, which would hide a per-competition bias. Model-driven line selection would bet Over on nearly every EuroCup game at an inflated `P(Over)`.
+
+**Still open**:
+- **Ladder selection is only half-built.** The scraper stores every row; the consumers still read the back-compat scalars (main line). The operator's chosen policy — pick the row from the model's outcome — needs implementing in `predict_euroleague.py` / `auto_wager`. When it lands, also record the **main-line** bet that *would* have been placed, unbet, so ladder-shopping can be compared against it on settled money. Rationale: maximising `conf × odds − 1` over ~17 rows is a maximum over noisy estimates, and this repo has already measured that shape of selection picking out the model's own error (CLAUDE.md, "No measured edge over the market"); the parallel record is how we find out cheaply whether it repeats here.
+- Models are still the May fit — no retrain run, none needed until the season accrues games.
 
 ## How to update this doc
 
