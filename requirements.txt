@@ -24,6 +24,14 @@ flask==3.1.2
 # ml_project/nba/process_archive.py.
 nba_api==1.11.4
 
+# Euroleague / EuroCup
+# The ONLY data source for both competitions: schedule, results and per-player
+# box scores (ml_project/euroleague/fetch_euroleague_daily.py, build_corpus.py).
+# Was used to build the corpus and models in May 2026 but never declared here,
+# so every checkout since had a Euroleague pipeline that could not fetch —
+# and failed silently, because the import error was caught per-competition.
+euroleague-api==0.1.1
+
 # Real betting (dormant — macOS Keychain credentials + Playwright stealth)
 keyring==25.7.0
 playwright-stealth==2.0.3

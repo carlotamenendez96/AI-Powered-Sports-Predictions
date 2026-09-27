@@ -261,7 +261,16 @@ Placeholder card first (mirrors NBA Phase A), real panel once the moneyline flow
 
 ## Bugs / fixes queue
 
-_(empty — pipeline doesn't exist yet)_
+**Season-start reactivation (2026-09-27) — four defects, all fixed.** The pipeline was built off-season in May and had never run against a live season. First contact with the 2026-27 season (EuroLeague tipped off 24 Sep) found:
+
+1. **`euroleague-api` was never in `requirements.txt`** and was not installed. It is the *only* data source for both competitions. Built in May on the phase branch with an ad-hoc install, so every checkout since had a Euroleague pipeline that could not fetch anything. Now pinned at `0.1.1`.
+2. **…and it failed silently.** `fixtures()` imported the package *inside* the per-competition `try`, so `ModuleNotFoundError` was caught twice, an **empty** `fixtures_<date>.json` was written, and the process exited **0** — indistinguishable from a day with no games. Same silent-failure class as football's `update_leagues_data.sh` / `update_football_data.py`. The import now sits outside the loop and returns 1 with an install hint; a per-competition failure is still tolerated (EuroCup legitimately raises `KeyError('game')` on a season with no games yet, and hard-failing would block EuroLeague predictions all autumn), but **all** competitions failing returns 1 and writes no file, so an outage can never masquerade as an empty slate or clobber a good file.
+3. **`fixtures()` queried a results-only endpoint.** It used `GameStats.get_game_report_single_season`, which on 2026-09-27 returned 10 rows for season 2026 — every one `played=True` — so the `played != True` filter could never match and the mode returned **0 fixtures for every date**. No fixtures, no predictions, all season. The right source is `Schedule.get_schedule(season)`: the full 380-game calendar including unplayed games, and its `gamecode` (`"E2026_7"`) is already exactly the `gameId` that `build_corpus` produces. Two traps in that feed: `played` is the **string** `"true"`/`"false"` (a real bool on the other endpoint, so `!= True` matches everything), and `confirmedtime` is a boolean flag despite the name — the tip-off is `startime`.
+4. **Corpus was 4 months stale.** Backfilled 2026-09-24 and 2026-09-25 via `append-results` (+20 team-rows, 10 games, idempotent — a re-run adds 0), then re-ran `euroleague_feature_engineering.py`, because `predict_euroleague.py` reads the **cached** `euroleague_elo.json` rather than recomputing: without that step the backfill would have reached rolling-form features but not ELO. 20 ratings moved (exactly the 20 team-rows) plus one new ladder (91 vs 90 — a club new to the competition); `training_data.csv` 4,352 → 4,361 games.
+
+Verified end to end afterwards: `./bin/run_euroleague_predictions.sh 2026-09-29` → 13 fixtures (8 E + 5 U), 13 predictions, per-competition Platt applied, exit 0. **EuroCup fixtures work through the schedule endpoint** even though its game-report call still raises, so the tolerate-one-competition rule is what keeps it usable. Calibration is compressing hard on this slate (raw 0.23–0.80 → calibrated 0.46–0.70) but is **order-preserving within each competition** — not the ordering inversion that got football's calibration disabled. Worth re-checking once the season accrues settled games.
+
+**Still open**: no odds source, so `auto_wager` yields empty slips (see Phase 3 note and "Open / deferred"). Models are still the May fit — no retrain was run, and none is needed until the new season accrues games.
 
 ## How to update this doc
 
