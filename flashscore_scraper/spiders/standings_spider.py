@@ -4,6 +4,13 @@ import os
 import json
 from scrapy_playwright.page import PageMethod
 
+# Explicit bound on every selector wait / tab click. Playwright's own default
+# is 30s, but PLAYWRIGHT_DEFAULT_NAVIGATION_TIMEOUT (90s in settings.py) covers
+# navigation only, so leaving these implicit made the real bound easy to
+# misread when diagnosing a stalled crawl.
+SELECTOR_TIMEOUT_MS = 30000
+
+
 class StandingsSpider(scrapy.Spider):
     name = "standings"
     
@@ -57,99 +64,122 @@ class StandingsSpider(scrapy.Spider):
         page = response.meta["playwright_page"]
         league = response.meta['league']
         country = response.meta['country']
-        
-        # 1. Overall
-        await page.wait_for_selector(".ui-table__row")
-        overall_data = await self.extract_table(page, "standings")
-        yield {
-            'type': 'standings_overall',
-            'country': country,
-            'league': league,
-            'table': overall_data
-        }
-        
-        # 2. Home
-        try:
-            # Click Home Tab
-            # Selectors can be tricky, using text "Home" in the subTabs might work better
-            # Or use the href pattern from CSV if we wanted, but clicking is usually safer in SPA
-            # XPath: //a[contains(@href, 'standings/home')]
-            await page.click("a[href*='standings/home']")
-            await page.wait_for_timeout(1000) # Wait for table update
-            await page.wait_for_selector(".ui-table__row")
-            home_data = await self.extract_table(page, "standings")
-            yield {
-                'type': 'standings_home',
-                'country': country,
-                'league': league,
-                'table': home_data
-            }
-        except Exception as e:
-            self.logger.error(f"Error extracting Home standings for {league}: {e}")
 
-        # 3. Away
         try:
-            await page.click("a[href*='standings/away']")
-            await page.wait_for_timeout(1000)
-            await page.wait_for_selector(".ui-table__row")
-            away_data = await self.extract_table(page, "standings")
+            # 1. Overall
+            #
+            # Guarded since 2026-09-27. This first wait used to sit outside any
+            # try, and page.close() only ran on the success path below, so a
+            # page that never renders a table (DOM change, throttled request,
+            # a competition with no standings) killed the callback and LEAKED
+            # the Playwright page — with playwright_include_page=True nothing
+            # else closes it. Leaked pages accumulate in the browser context
+            # for the rest of the crawl. Now the close is in a finally, and a
+            # missing table costs this one league instead of the page.
+            try:
+                await page.wait_for_selector(".ui-table__row", timeout=SELECTOR_TIMEOUT_MS)
+            except Exception as e:
+                self.logger.error(f"No standings table for {country}: {league} ({e}) — skipping league.")
+                return
+            overall_data = await self.extract_table(page, "standings")
             yield {
-                'type': 'standings_away',
+                'type': 'standings_overall',
                 'country': country,
                 'league': league,
-                'table': away_data
+                'table': overall_data
             }
-        except Exception as e:
-            self.logger.error(f"Error extracting Away standings for {league}: {e}")
-            
-        await page.close()
+
+            # 2. Home
+            try:
+                # Click Home Tab
+                # Selectors can be tricky, using text "Home" in the subTabs might work better
+                # Or use the href pattern from CSV if we wanted, but clicking is usually safer in SPA
+                # XPath: //a[contains(@href, 'standings/home')]
+                await page.click("a[href*='standings/home']", timeout=SELECTOR_TIMEOUT_MS)
+                await page.wait_for_timeout(1000) # Wait for table update
+                await page.wait_for_selector(".ui-table__row", timeout=SELECTOR_TIMEOUT_MS)
+                home_data = await self.extract_table(page, "standings")
+                yield {
+                    'type': 'standings_home',
+                    'country': country,
+                    'league': league,
+                    'table': home_data
+                }
+            except Exception as e:
+                self.logger.error(f"Error extracting Home standings for {league}: {e}")
+
+            # 3. Away
+            try:
+                await page.click("a[href*='standings/away']", timeout=SELECTOR_TIMEOUT_MS)
+                await page.wait_for_timeout(1000)
+                await page.wait_for_selector(".ui-table__row", timeout=SELECTOR_TIMEOUT_MS)
+                away_data = await self.extract_table(page, "standings")
+                yield {
+                    'type': 'standings_away',
+                    'country': country,
+                    'league': league,
+                    'table': away_data
+                }
+            except Exception as e:
+                self.logger.error(f"Error extracting Away standings for {league}: {e}")
+        finally:
+            await page.close()
 
     async def parse_form(self, response):
         page = response.meta["playwright_page"]
         league = response.meta['league']
         country = response.meta['country']
         # Default to 'last_5' if not set
-        form_type = response.meta.get('form_type', 'last_5') 
-        
-        # 1. Overall Form
-        await page.wait_for_selector(".ui-table__row")
-        overall_data = await self.extract_table(page, "form")
-        yield {
-            'type': f'{form_type}_matches_overall',
-            'country': country,
-            'league': league,
-            'table': overall_data
-        }
-        
-        # 2. Home Form
-        try:
-            await page.click("a[href*='form/home']")
-            await page.wait_for_timeout(1000)
-            await page.wait_for_selector(".ui-table__row")
-            home_data = await self.extract_table(page, "form")
-            yield {
-                'type': f'{form_type}_matches_home',
-                'country': country,
-                'league': league,
-                'table': home_data
-            }
-        except: pass
+        form_type = response.meta.get('form_type', 'last_5')
 
-        # 3. Away Form
         try:
-            await page.click("a[href*='form/away']")
-            await page.wait_for_timeout(1000)
-            await page.wait_for_selector(".ui-table__row")
-            away_data = await self.extract_table(page, "form")
+            # 1. Overall Form — same leak guard as parse_standings above.
+            try:
+                await page.wait_for_selector(".ui-table__row", timeout=SELECTOR_TIMEOUT_MS)
+            except Exception as e:
+                self.logger.error(f"No {form_type} form table for {country}: {league} ({e}) — skipping league.")
+                return
+            overall_data = await self.extract_table(page, "form")
             yield {
-                'type': f'{form_type}_matches_away',
+                'type': f'{form_type}_matches_overall',
                 'country': country,
                 'league': league,
-                'table': away_data
+                'table': overall_data
             }
-        except: pass
-        
-        await page.close()
+
+            # 2. Home Form
+            try:
+                await page.click("a[href*='form/home']", timeout=SELECTOR_TIMEOUT_MS)
+                await page.wait_for_timeout(1000)
+                await page.wait_for_selector(".ui-table__row", timeout=SELECTOR_TIMEOUT_MS)
+                home_data = await self.extract_table(page, "form")
+                yield {
+                    'type': f'{form_type}_matches_home',
+                    'country': country,
+                    'league': league,
+                    'table': home_data
+                }
+            # Was a bare `except: pass`. The silence is part of why the 25h
+            # stall was undiagnosable, so failures are logged now.
+            except Exception as e:
+                self.logger.error(f"Error extracting Home {form_type} form for {league}: {e}")
+
+            # 3. Away Form
+            try:
+                await page.click("a[href*='form/away']", timeout=SELECTOR_TIMEOUT_MS)
+                await page.wait_for_timeout(1000)
+                await page.wait_for_selector(".ui-table__row", timeout=SELECTOR_TIMEOUT_MS)
+                away_data = await self.extract_table(page, "form")
+                yield {
+                    'type': f'{form_type}_matches_away',
+                    'country': country,
+                    'league': league,
+                    'table': away_data
+                }
+            except Exception as e:
+                self.logger.error(f"Error extracting Away {form_type} form for {league}: {e}")
+        finally:
+            await page.close()
 
     async def extract_table(self, page, table_type):
         # Identify rows
