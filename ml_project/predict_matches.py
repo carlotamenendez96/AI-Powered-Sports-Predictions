@@ -348,8 +348,14 @@ class MatchPredictor:
             # --- LEAGUE FILTERING ---
             SUPPORTED_COUNTRIES = {
                 'ENGLAND', 'SPAIN', 'FRANCE', 'GERMANY', 'ITALY', 'NETHERLANDS', 'PORTUGAL', 'SCOTLAND', 
-                'TURKEY', 'USA', 'POLAND', 'RUSSIA', 'NORWAY', 'SWEDEN', 'FINLAND', 'ROMANIA', 'GREECE', 
+                'TURKEY', 'USA', 'POLAND', 'RUSSIA', 'NORWAY', 'SWEDEN', 'FINLAND', 'ROMANIA', 'GREECE',
                 'IRELAND', 'SWITZERLAND', 'JAPAN', 'MEXICO', 'BELGIUM', 'AUSTRIA', 'DENMARK', 'CZECH REPUBLIC', 'CROATIA',
+                # Added 2026-09-26. All three are whitelisted in
+                # target_leagues.json and carry a MatchHistory CSV
+                # (BRA-Serie_A, CHN-Super_League, ARG-Liga_Profesional), so ELO
+                # and rolling form already resolve — they were dropped here and
+                # nowhere else, which the new drop summary below made visible.
+                'BRAZIL', 'CHINA', 'ARGENTINA',
                 'EUROPE', 'WORLD'
             }
             country_prefix = league_name.split(':')[0].upper().strip()
