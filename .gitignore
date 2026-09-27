@@ -2,6 +2,11 @@
 .claude/
 data_sets/*
 !data_sets/target_leagues.json
+# Hand-maintained source, not deployment state: nothing rewrites it at
+# runtime, and the standings spider cannot start without it (start_requests
+# reads it directly), so a fresh clone needs it present rather than seeded.
+# Same category as target_leagues.json, not as the two templates below.
+!data_sets/standings_form_flashscore_direct_links.csv
 
 # Per-deployment state, NOT source. betting_config.json carries live lane
 # bankroll balances that the running web UI rewrites on every settlement;

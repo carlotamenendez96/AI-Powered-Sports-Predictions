@@ -43,6 +43,11 @@ def _norm_league(name):
 # so no normalisation can bridge them. Keyed COUNTRY|<normalised slate label>.
 STANDINGS_LEAGUE_ALIASES = {
     "PORTUGAL|ligaportugal": "Liga 1",       # slate "Liga Portugal"
+    # target_leagues.json carries both "ROMANIA: Liga 1" and "ROMANIA:
+    # Superliga" for the same competition. Flashscore's page and every slate
+    # seen so far say Superliga, which is what the crawl row is labelled, so
+    # this only covers the older label resurfacing.
+    "ROMANIA|liga1": "Superliga",
 }
 
 
