@@ -64,57 +64,38 @@
     </div>
   </div>
 
-  {# ---- Predictions table ---- #}
-  {% if predictions %}
+  {# ---- Prediction reports (filenames only; the table lives behind View) ---- #}
   <div class="card mb-3">
-    <div class="card-header d-flex justify-content-between">
-      <strong>Predictions · {{ predictions|length }} games</strong>
-      <span class="text-muted small">corpus-derived features · per-competition Platt-calibrated P(home_win)</span>
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <strong>Prediction Reports</strong>
+      <span class="text-muted small">
+        {% if prediction_files %}<span class="badge bg-secondary">{{ prediction_files|length }} file(s)</span>{% endif %}
+        output_euroleague/predictions_euroleague_*.csv
+      </span>
     </div>
-    <div class="table-responsive">
-      <table class="table table-sm table-hover mb-0">
-        <thead>
-          <tr>
-            <th>Date</th>
-            <th>Comp</th>
-            <th>Matchup</th>
-            <th class="text-end">Home ELO</th>
-            <th class="text-end">Away ELO</th>
-            <th class="text-end">P(home)</th>
-            <th class="text-end small text-muted">P(raw)</th>
-            <th>Pick</th>
-            <th class="text-end">Pred Total</th>
-            <th class="small text-muted">Cal</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for p in predictions %}
-          <tr>
-            <td class="small text-muted">{{ p['Date'] }}</td>
-            <td><span class="badge {{ 'bg-warning text-dark' if p.get('competition') == 'U' else 'bg-dark' }}">{{ 'EuroCup' if p.get('competition') == 'U' else 'EuroLg' }}</span></td>
-            <td><strong>{{ p['Home Team'] }}</strong> <span class="text-muted">vs</span> {{ p['Away Team'] }}</td>
-            <td class="text-end">{{ p['Home ELO'] }}</td>
-            <td class="text-end">{{ p['Away ELO'] }}</td>
-            <td class="text-end fw-semibold">{{ '%.3f'|format(p['Home Win Prob']|float) }}</td>
-            <td class="text-end small text-muted">{{ '%.3f'|format(p.get('Home Win Prob (raw)', 0)|float) }}</td>
-            <td>
-              {% if p['Predicted Winner'] == 'HOME' %}
-                <span class="badge bg-primary">HOME</span>
-              {% else %}
-                <span class="badge bg-secondary">AWAY</span>
-              {% endif %}
-            </td>
-            <td class="text-end">{{ '%.1f'|format(p['Predicted Total']|float) }}</td>
-            <td class="small text-muted">{{ p.get('Cal Source', '') }}</td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
+    <div class="card-body">
+      {% if prediction_files %}
+      <div class="list-group">
+        {% for item in prediction_files[:5] %}
+        <div class="list-group-item d-flex justify-content-between align-items-center">
+          <a href="{{ url_for('euroleague.view_file', filename=item.filename) }}"
+             class="text-decoration-none flex-grow-1">
+            <strong>{{ item.date }}</strong>
+            <small class="text-muted">({{ item.count }} games)</small>
+          </a>
+          <a href="{{ url_for('euroleague.view_file', filename=item.filename) }}"
+             class="btn btn-sm btn-outline-primary">View</a>
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <p class="text-muted small mb-0">
+        No prediction reports yet. Click <strong>Predict</strong> above or run
+        <code>./bin/run_euroleague_predictions.sh</code>.
+      </p>
+      {% endif %}
     </div>
   </div>
-  {% else %}
-  <div class="alert alert-info">No predictions yet. Click <strong>Predict</strong> above or run <code>./bin/run_euroleague_predictions.sh</code>. (Off-season until ~October — predictions populate once a live slate exists.)</div>
-  {% endif %}
 
   {# ---- Recent slips ---- #}
   <div class="card">

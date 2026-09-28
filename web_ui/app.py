@@ -246,7 +246,17 @@ def index():
     # gated behind FOOTBALL_NEXT_STEPS phase 7.
     _attach_open_bets(live_matches)
 
+    _latest_pred = predictions[0]['filename'] if predictions else None
+    _lane_br = lane_bankrolls('football')
     return render_template('dashboard.html',
+                          # Minimal header, mirroring the Euroleague dashboard:
+                          # sport title + latest prediction file + per-lane
+                          # bankroll card. Named `lane_br` rather than
+                          # `bankrolls` so it does not shadow the per-SPORT map
+                          # the inject_bankroll context processor supplies.
+                          lane_br=_lane_br,
+                          total_bankroll=round(sum(_lane_br.values()), 2),
+                          pred_file=_latest_pred,
                           predictions=predictions,
                           verifications=verifications,
                           league_stats=league_stats,

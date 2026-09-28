@@ -94,6 +94,27 @@ def _load_odds_by_pair(date_str: str) -> dict:
     return {(r.get("home_team"), r.get("away_team")): r for r in rows}
 
 
+def _prediction_files(limit: int = 8) -> list:
+    """[{filename, date, count}] newest first — same shape football's dashboard
+    uses, so the two pages can render file lists identically.
+
+    The dashboard lists these instead of the rows themselves: the full table
+    lives behind /euroleague/view/<filename>, opened on demand.
+    """
+    out = []
+    for path in sorted(glob.glob(os.path.join(_out_dir(), "predictions_euroleague_*.csv")),
+                       key=os.path.getmtime, reverse=True)[:limit]:
+        name = os.path.basename(path)
+        try:
+            n = max(0, sum(1 for _ in open(path)) - 1)       # rows minus header
+        except OSError:
+            n = 0
+        out.append({"filename": name,
+                    "date": name.replace("predictions_euroleague_", "").replace(".csv", ""),
+                    "count": n})
+    return out
+
+
 def _recent_slips(limit: int = 5) -> list:
     files = sorted(glob.glob(os.path.join(_out_dir(), "bets_*.json")),
                    key=os.path.getctime, reverse=True)
@@ -121,12 +142,11 @@ def _recent_slips(limit: int = 5) -> list:
 @euroleague_bp.route('/')
 def index():
     pred_path = _latest_predictions_path()
-    df = _load_predictions(pred_path)
     bankrolls = lane_bankrolls('euroleague')
     total_bankroll = round(sum(bankrolls.values()), 2)
     return render_template(
         'euroleague/index.html',
-        predictions=df.to_dict(orient='records') if not df.empty else [],
+        prediction_files=_prediction_files(),
         pred_file=(os.path.basename(pred_path) if pred_path else None),
         bankrolls=bankrolls,
         total_bankroll=total_bankroll,
@@ -237,11 +257,20 @@ def auto_wager():
         max_model_per_bet = model_br * model_max_pct
         conv_flat_stake   = conv_br * conv_stake_pct
 
+        def _disp(row):
+            """Short display names ('Panathinaikos') over the API's
+            sponsor-laden ones. Applied to home/away/selection TOGETHER: the
+            resolver settles a moneyline by comparing `selection` to the bet's
+            own `home`/`away`, so they must agree with each other. The odds
+            join still keys on the canonical `Home Team`/`Away Team`."""
+            return (row.get('Home Short') or row.get('Home Team'),
+                    row.get('Away Short') or row.get('Away Team'))
+
         def _ml_candidate(row) -> Optional[dict]:
-            home, away = row.get('Home Team'), row.get('Away Team')
+            home, away = _disp(row)
             if not home or not away:
                 return None
-            odds_row = odds_by_pair.get((home, away))
+            odds_row = odds_by_pair.get((row.get('Home Team'), row.get('Away Team')))
             if not odds_row:
                 return None  # no odds → skip (season-gated until the odds probe lands)
             p_home = _to_float(row.get('Home Win Prob'))
@@ -278,8 +307,8 @@ def auto_wager():
             without it a losing month tells us nothing about whether
             ladder-shopping or the model was at fault.
             """
-            home, away = row.get('Home Team'), row.get('Away Team')
-            odds_row = odds_by_pair.get((home, away))
+            home, away = _disp(row)
+            odds_row = odds_by_pair.get((row.get('Home Team'), row.get('Away Team')))
             if not odds_row:
                 return None
             # Training-contract gate (see predict_euroleague.py). The model is
@@ -527,3 +556,18 @@ def verify():
 def retrain():
     _kick('retrain', 'retrain_euroleague_pipeline.sh', [], "Started Euroleague retrain pipeline (full).")
     return redirect(url_for('euroleague.index'))
+
+
+@euroleague_bp.route('/view/<filename>')
+def view_file(filename):
+    """Render one predictions CSV. The dashboard links here rather than
+    inlining the table (football does the same via /football/view/<f>)."""
+    safe = os.path.basename(filename)                      # no path traversal
+    path = os.path.join(_out_dir(), safe)
+    if not safe.startswith('predictions_euroleague_') or not os.path.exists(path):
+        flash('File not found.', 'danger')
+        return redirect(url_for('euroleague.index'))
+    df = _load_predictions(path).fillna('')
+    return render_template('euroleague/view.html',
+                           filename=safe,
+                           rows=df.to_dict(orient='records'))

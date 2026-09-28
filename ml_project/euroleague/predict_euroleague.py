@@ -181,6 +181,15 @@ def predict(date_str: str | None = None) -> int:
         gaps = [c for c in required_feats
                 if feats.get(c) is None or (isinstance(feats.get(c), float) and np.isnan(feats.get(c)))]
         totals_ok = not gaps
+        # Display names. The API's are sponsor-laden ("PANATHINAIKOS AKTOR
+        # ATHENS", "LDLC ASVEL VILLEURBANNE"); Flashscore's short forms
+        # ("Panathinaikos", "Villeurbanne") are already carried on the odds
+        # record from the join. `Home Team`/`Away Team` stay canonical because
+        # the odds join and the fixtures key on them — this is display only,
+        # falling back to the canonical name when a fixture has no odds.
+        short_h = odds_row.get("flashscore_home") or fx.get("home_team")
+        short_a = odds_row.get("flashscore_away") or fx.get("away_team")
+
         ladder = odds_row.get("totals") or []
         pick = best_ev(pred_total, sigma, ladder) if (sigma and totals_ok) else None
         cf = counterfactual(pred_total, sigma, ladder) if (sigma and totals_ok) else None
@@ -189,6 +198,8 @@ def predict(date_str: str | None = None) -> int:
             "competition": comp,
             "Home Team": fx.get("home_team"),
             "Away Team": fx.get("away_team"),
+            "Home Short": short_h,
+            "Away Short": short_a,
             "Home ELO": int(feats.get("home_elo_pre", ELO_INIT)),
             "Away ELO": int(feats.get("away_elo_pre", ELO_INIT)),
             "Home Win Prob": round(cal_p, 4),
