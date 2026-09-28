@@ -120,6 +120,7 @@ def predict(date_str: str | None = None) -> int:
     tot_features = json.load(open(TOTAL_FEATURES))
 
     from euroleague_calibration import load_calibration_data, apply_home_win_platt, prob_over, total_sigma
+    from euroleague_totals import best_ev, counterfactual
     cal = load_calibration_data(CALIBRATION_PATH)
     print(f"[predict] calibration: {'loaded (per-competition)' if cal else 'none — raw probs served'}")
 
@@ -152,6 +153,17 @@ def predict(date_str: str | None = None) -> int:
         odds_row = odds_by_pair.get((fx.get("home_team"), fx.get("away_team"))) or {}
         over_line = odds_row.get("total")
         p_over = prob_over(pred_total, over_line, sigma) if (over_line is not None and sigma) else None
+
+        # Ladder selection. `Over Line` / `P(Over)` above stay the MAIN line —
+        # they are the audit trail and the counterfactual reference — while the
+        # Bet* columns carry the row the strategy would actually stake, chosen
+        # by EV across every offered line. Both come from euroleague_totals so
+        # the dashboard can never advertise a different bet than auto_wager
+        # stakes. Cf* is the main-line bet we deliberately do NOT place, kept so
+        # the two policies can be compared on settled money later.
+        ladder = odds_row.get("totals") or []
+        pick = best_ev(pred_total, sigma, ladder) if sigma else None
+        cf = counterfactual(pred_total, sigma, ladder) if sigma else None
         rows.append({
             "Date": date_str,
             "competition": comp,
@@ -168,6 +180,19 @@ def predict(date_str: str | None = None) -> int:
             "Over Line": over_line if over_line is not None else "",
             "P(Over)": round(p_over, 4) if p_over is not None else "",
             "P(Under)": round(1.0 - p_over, 4) if p_over is not None else "",
+            # Staked pick (ladder, best EV) ...
+            "Bet Line": pick["line"] if pick else "",
+            "Bet Side": pick["side"] if pick else "",
+            "Bet Odds": pick["odds"] if pick else "",
+            "Bet Book": pick["book"] if pick else "",
+            "Bet Prob": round(pick["prob"], 4) if pick else "",
+            "Bet EV": round(pick["ev"], 4) if pick else "",
+            # ... and the main-line bet NOT placed, for the A/B.
+            "Cf Line": cf["line"] if cf else "",
+            "Cf Side": cf["side"] if cf else "",
+            "Cf Odds": cf["odds"] if cf else "",
+            "Cf Prob": round(cf["prob"], 4) if cf else "",
+            "Cf EV": round(cf["ev"], 4) if cf else "",
             "Home Rest": feats.get("home_rest_days"),
             "Away Rest": feats.get("away_rest_days"),
             "gameId": fx.get("gameId"),

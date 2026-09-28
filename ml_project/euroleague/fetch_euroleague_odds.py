@@ -49,6 +49,10 @@ import time
 from playwright.sync_api import sync_playwright
 from rapidfuzz import fuzz
 
+# Shared with predict_euroleague.py and /euroleague/auto_wager so the
+# main-line definition cannot drift between scrape, display and stake.
+from euroleague_totals import BOOK_PREFERENCE, book_rank as _book_rank, main_line
+
 _REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DATA_DIR = os.path.join(_REPO, "data_sets", "Euroleague")
 OUT_DIR = os.path.join(_REPO, "output_euroleague")
@@ -58,10 +62,6 @@ FIXTURE_URLS = {
     "U": "https://www.flashscore.com/basketball/europe/eurocup/fixtures/",
 }
 COMPETITION_NAMES = {"E": "Euroleague", "U": "EuroCup"}
-
-# Tie-break order when several books offer an equivalent price/line. Operator's
-# call (2026-09-27): bwin first. Normalised comparison, so "Bwin.gr" matches.
-BOOK_PREFERENCE = ["bwin", "bet365", "stoiximan", "pamestoixima", "novibet"]
 
 SLEEP_S = 1.0          # same politeness budget as the other Flashscore paths
 
@@ -76,19 +76,6 @@ SLEEP_S = 1.0          # same politeness budget as the other Flashscore paths
 # threshold low enough to invent matches.
 NAME_MATCH_MIN = 60
 NAME_MATCH_MIN_MARGIN = 20
-
-
-def _norm_book(name: str) -> str:
-    return re.sub(r"[^a-z0-9]", "", (name or "").lower()).replace("gr", "", 1) \
-        if (name or "").lower().endswith(".gr") else re.sub(r"[^a-z0-9]", "", (name or "").lower())
-
-
-def _book_rank(book: str) -> int:
-    n = _norm_book(book)
-    for i, pref in enumerate(BOOK_PREFERENCE):
-        if pref in n:
-            return i
-    return len(BOOK_PREFERENCE)
 
 
 def _num(s):
@@ -192,22 +179,6 @@ def _scrape_market(page, url: str, n_cols: int, validator=None):
         print(f"      (discarded {rejected} implausible row(s) — page was probably "
               f"not the odds table)")
     return out
-
-
-def main_line(totals: list) -> dict | None:
-    """The consensus total: the row whose over/under prices are most balanced.
-
-    Recorded alongside whatever the strategy actually bets so the two can be
-    compared on settled money later. Ladder-shopping maximises EV over ~17
-    noisy rows, and this project has already measured that shape of selection
-    picking out the model's own error rather than real edge (CLAUDE.md, "No
-    measured edge over the market"); this column is how we find out whether
-    that repeats for basketball totals, cheaply and without betting on it.
-    """
-    scored = [t for t in totals if t["over"] and t["under"]]
-    if not scored:
-        return None
-    return sorted(scored, key=lambda t: (abs(t["over"] - t["under"]), _book_rank(t["book"])))[0]
 
 
 def _preferred(rows: list, keys: tuple):

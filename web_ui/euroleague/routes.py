@@ -40,6 +40,9 @@ from flask import (
 )
 
 from betting_backend import EuroleagueBettingBackend, make_bet_id
+# Shared with predict_euroleague.py so the displayed pick and the staked
+# pick are computed by the same code path.
+from ml_project.euroleague import euroleague_totals as el_totals
 from sports_config import LANES, get_sport_config, lane_bankrolls, update_bankroll
 
 
@@ -264,24 +267,32 @@ def auto_wager():
             }
 
         def _total_candidate(row) -> Optional[dict]:
-            """O/U candidate: predicted total + posted line + P(Over) from the CSV."""
+            """O/U candidate chosen from the whole TOTALS LADDER, not one line.
+
+            Each book posts its own total and its own prices, so the bet is a
+            (line, side, price) triple that must come from a single row. The
+            selection is `euroleague_totals.best_ev` — the same helper the
+            predictor displays from, so the dashboard and the slip can never
+            disagree — and every bet also carries `counterfactual`: the
+            main-line bet we did NOT place. That pairing is the whole point;
+            without it a losing month tells us nothing about whether
+            ladder-shopping or the model was at fault.
+            """
             home, away = row.get('Home Team'), row.get('Away Team')
             odds_row = odds_by_pair.get((home, away))
             if not odds_row:
                 return None
-            pov = row.get('P(Over)')
-            line = odds_row.get('total')
-            if pov in (None, '') or line is None:
+            pred_total, sigma = _to_float(row.get('Predicted Total')), _to_float(row.get('Total Sigma'))
+            ladder = odds_row.get('totals') or []
+            if not pred_total or not sigma or not ladder:
                 return None
-            p_over = _to_float(pov)
-            if p_over >= 0.5:
-                conf, odds_dec, selection = p_over, odds_row.get('over_ml_decimal'), f"Over {line}"
-            else:
-                conf, odds_dec, selection = 1.0 - p_over, odds_row.get('under_ml_decimal'), f"Under {line}"
-            if odds_dec in (None, 0):
+            pick = el_totals.best_ev(pred_total, sigma, ladder)
+            if not pick:
                 return None
-            odds_dec = float(odds_dec)
-            ev = conf * odds_dec - 1.0
+            cf = el_totals.counterfactual(pred_total, sigma, ladder)
+            conf, odds_dec = pick['prob'], pick['odds']
+            selection = f"{pick['side']} {pick['line']}"
+            ev = pick['ev']
             return {
                 'date': target_date, 'match': f"{home} vs {away}",
                 'home': home, 'away': away, 'match_id': row.get('gameId') or '',
@@ -289,6 +300,15 @@ def auto_wager():
                 'odds': round(odds_dec, 3), 'odd': round(odds_dec, 3),
                 'conf': f"{conf:.3f}", 'ev': f"{ev:+.3f}", 'kelly': f"{_kelly(odds_dec, conf):.2%}",
                 'status': 'OPEN',
+                'book': pick['book'], 'line': pick['line'], 'side': pick['side'],
+                'ladder_size': len(ladder),
+                # The main-line bet we did NOT place, settled later against the
+                # same final score to A/B ladder-shopping vs the consensus line.
+                'counterfactual': ({'line': cf['line'], 'side': cf['side'],
+                                    'odds': round(cf['odds'], 3),
+                                    'prob': round(cf['prob'], 4),
+                                    'ev': round(cf['ev'], 4), 'book': cf['book']}
+                                   if cf else None),
                 '_conf': conf, '_odds': odds_dec, '_ev': ev,
             }
 
