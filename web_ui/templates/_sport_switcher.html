@@ -1,0 +1,44 @@
+{# ---------------------------------------------------------------------------
+   Sport switcher — one click between sport dashboards, instead of the navbar
+   Sport ▾ dropdown (two clicks and a hidden menu).
+
+   Drives itself off the same `sports` list the navbar uses (injected globally
+   by inject_sports), so adding a sport to SPORTS in app.py surfaces it here
+   with no template change — the same forward-compatibility the landing page
+   and navbar already have.
+
+   Current sport is detected from request.blueprint, so this partial needs no
+   context and can be included from any sport page.
+--------------------------------------------------------------------------- #}
+<div class="d-flex align-items-center gap-2 mb-3 flex-wrap" role="group" aria-label="Switch sport">
+  {% for sport in sports %}
+    {% set _is_current = (request.blueprint == sport.slug) %}
+    {% set _icon %}
+      {%- if sport.icon_img -%}
+        <img src="{{ url_for('static', filename=sport.icon_img) }}" alt=""
+             class="sport-icon-sm me-1" style="vertical-align: -3px;">
+      {%- else -%}{{ sport.icon }} {% endif %}
+    {% endset %}
+    {% if _is_current %}
+      {# Current page: rendered as a disabled-looking active pill rather than a
+         link, so the row also says where you are. #}
+      <span class="btn btn-sm btn-primary disabled" aria-current="page">
+        {{ _icon|safe }}{{ sport.label }}
+      </span>
+    {% elif sport.active %}
+      <a class="btn btn-sm btn-outline-secondary" href="/{{ sport.slug }}/">
+        {{ _icon|safe }}{{ sport.label }}
+      </a>
+    {% else %}
+      <span class="btn btn-sm btn-outline-secondary disabled" tabindex="-1" aria-disabled="true"
+            title="{{ sport.label }} is not active yet">
+        {{ _icon|safe }}{{ sport.label }}
+      </span>
+    {% endif %}
+  {% endfor %}
+
+  <span class="vr mx-1 d-none d-sm-inline"></span>
+  <a class="btn btn-sm btn-outline-secondary" href="/" title="All sports + portfolio summary">🏆 All</a>
+  <a class="btn btn-sm btn-outline-secondary" href="/betting{% if request.blueprint %}?tab={{ request.blueprint }}{% endif %}"
+     title="Betting page for this sport">💸 Betting</a>
+</div>
