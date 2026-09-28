@@ -177,6 +177,35 @@ def _kelly(odd: float, prob: float) -> float:
     return max(0.0, ((b * prob - q) / b) * 0.25)
 
 
+def _available_prediction_dates() -> list:
+    """Prediction dates with no bets slip yet — what the slip generator offers.
+
+    Mirrors football's `_available_prediction_dates`. Unlike football this does
+    not filter to today-or-later: Euroleague slates are ~2x a week, so a
+    yesterday-but-unbet file is still worth showing rather than silently
+    vanishing from the picker.
+    """
+    out = os.path.join(_out_dir(), '')
+    pred = {os.path.basename(p).replace('predictions_euroleague_', '').replace('.csv', '')
+            for p in glob.glob(os.path.join(out, 'predictions_euroleague_*.csv'))}
+    bet = set()
+    for p in glob.glob(os.path.join(out, 'bets_*.json')):
+        try:
+            data = json.load(open(p))
+        except (json.JSONDecodeError, OSError):
+            continue
+        bets = data if isinstance(data, list) else data.get('bets', [])
+        if any(str(b.get('status', '')).upper() != 'VOID' for b in bets):
+            bet.add(os.path.basename(p).replace('bets_', '').replace('.json', ''))
+    return sorted(pred - bet, reverse=True)
+
+
+@euroleague_bp.route('/predictions/available')
+def predictions_available():
+    """Dates the slip generator can bet (prediction file present, no slip yet)."""
+    return jsonify({'dates': _available_prediction_dates()})
+
+
 @euroleague_bp.route('/auto_wager')
 def auto_wager():
     """JSON: 3-lane Euroleague moneyline slip preview (parity with NBA's)."""

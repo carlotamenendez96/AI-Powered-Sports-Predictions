@@ -56,23 +56,31 @@
       </form>
     </div>
     <div class="col-auto ms-auto">
+      <label class="form-label small mb-1 d-block">💸 Betting</label>
       {% if total_bankroll > 0 %}
-        <button class="btn btn-success" onclick="generateSlip()">💸 Generate Slip (Moneyline · v1)</button>
+        <a href="/betting?tab=euroleague#generate-slip" class="btn btn-outline-success btn-sm">
+          💸 Generate Bet Slip
+        </a>
       {% else %}
-        <button class="btn btn-success" disabled title="Fund sports.euroleague.bankrolls in betting_config.json">💸 Generate Slip (bankrolls € 0)</button>
+        <a class="btn btn-outline-success btn-sm disabled" tabindex="-1" aria-disabled="true"
+           title="Fund sports.euroleague.bankrolls first">💸 Generate Bet Slip (bankrolls € 0)</a>
       {% endif %}
+      <div class="form-text small mb-0">Opens the betting page's three-lane slip generator.</div>
     </div>
   </div>
 
   {# ---- Prediction reports (filenames only; the table lives behind View) ---- #}
   <div class="card mb-3">
-    <div class="card-header d-flex justify-content-between align-items-center">
+    <div class="card-header d-flex justify-content-between align-items-center"
+         role="button" data-bs-toggle="collapse" data-bs-target="#elPredictionsBody"
+         aria-expanded="true" aria-controls="elPredictionsBody" style="cursor:pointer;">
       <strong>Prediction Reports</strong>
       <span class="text-muted small">
         {% if prediction_files %}<span class="badge bg-secondary">{{ prediction_files|length }} file(s)</span>{% endif %}
-        output_euroleague/predictions_euroleague_*.csv
+        <span id="elPredictionsChevron" class="ms-2">▴</span>
       </span>
     </div>
+    <div id="elPredictionsBody" class="collapse show">
     <div class="card-body">
       {% if prediction_files %}
       <div class="list-group">
@@ -95,11 +103,21 @@
       </p>
       {% endif %}
     </div>
+    </div>
   </div>
 
   {# ---- Recent slips ---- #}
   <div class="card">
-    <div class="card-header"><strong>Recent slips</strong> <span class="text-muted small">(output_euroleague/bets_*.json)</span></div>
+    <div class="card-header d-flex justify-content-between align-items-center"
+         role="button" data-bs-toggle="collapse" data-bs-target="#elSlipsBody"
+         aria-expanded="true" aria-controls="elSlipsBody" style="cursor:pointer;">
+      <strong>Recent slips</strong>
+      <span class="text-muted small">
+        {% if recent_slips %}<span class="badge bg-secondary">{{ recent_slips|length }}</span>{% endif %}
+        <span id="elSlipsChevron" class="ms-2">▴</span>
+      </span>
+    </div>
+    <div id="elSlipsBody" class="collapse show">
     <div class="card-body">
       {% if recent_slips %}
         <table class="table table-sm mb-0">
@@ -120,70 +138,20 @@
         <p class="text-muted mb-0">No slips placed yet.</p>
       {% endif %}
     </div>
+    </div>
   </div>
 
-  {# ---- Slip preview (lightweight UI on /auto_wager JSON) ---- #}
-  <div id="slip-preview" class="card mt-3 d-none">
-    <div class="card-header d-flex justify-content-between">
-      <strong>Slip preview</strong>
-      <button type="button" class="btn-close" onclick="document.getElementById('slip-preview').classList.add('d-none')"></button>
-    </div>
-    <div class="card-body">
-      <div id="slip-lanes" class="mb-2"></div>
-      <table class="table table-sm">
-        <thead><tr><th>Lane</th><th>Match</th><th>Pick</th><th class="text-end">Odds</th><th class="text-end">Conf</th><th class="text-end">EV</th><th class="text-end">Stake €</th></tr></thead>
-        <tbody id="slip-rows"></tbody>
-      </table>
-      <div class="d-flex justify-content-between">
-        <div>Total stake: <strong>€<span id="slip-total">0</span></strong></div>
-        <button class="btn btn-success" onclick="placeSlip()">📥 Place Bets</button>
-      </div>
-    </div>
-  </div>
 </div>
 
 <script>
-let __SLIP__ = null;
-async function generateSlip() {
-  const r = await fetch('/euroleague/auto_wager');
-  const data = await r.json();
-  if (data.error) { alert('Auto-wager: ' + data.error); return; }
-  if (!data.bets || !data.bets.length) {
-    alert('No bets generated. ' + (data.odds_present ? '' :
-      'No Euroleague odds file yet — odds (and EV/betting) arrive with the season-start Flashscore odds probe.'));
-    return;
-  }
-  __SLIP__ = data;
-  const lanesDiv = document.getElementById('slip-lanes');
-  lanesDiv.innerHTML = '';
-  for (const [name, info] of Object.entries(data.lanes)) {
-    const badge = name === 'value' ? 'bg-primary' : name === 'conviction' ? 'bg-warning text-dark' : 'bg-info text-dark';
-    lanesDiv.insertAdjacentHTML('beforeend',
-      `<span class="badge ${badge} me-2">${name}: ${info.count} bets · €${info.total_stake} ${info.scaled ? '(cap-scaled)' : ''}</span>`);
-  }
-  const rows = document.getElementById('slip-rows');
-  rows.innerHTML = '';
-  for (const b of data.bets) {
-    rows.insertAdjacentHTML('beforeend',
-      `<tr><td><span class="badge bg-secondary">${b.lane}</span></td><td>${b.match}</td><td>${b.selection}</td>` +
-      `<td class="text-end">${b.odds}</td><td class="text-end">${b.conf}</td><td class="text-end">${b.ev}</td>` +
-      `<td class="text-end">${b.stake_units.toFixed(2)}</td></tr>`);
-  }
-  document.getElementById('slip-total').textContent = data.total_stake.toFixed(2);
-  document.getElementById('slip-preview').classList.remove('d-none');
-  document.getElementById('slip-preview').scrollIntoView({behavior: 'smooth'});
-}
-async function placeSlip() {
-  if (!__SLIP__ || !__SLIP__.bets.length) { alert('Generate a slip first.'); return; }
-  if (!confirm(`Place ${__SLIP__.bets.length} Euroleague virtual bets for €${__SLIP__.total_stake.toFixed(2)}?`)) return;
-  const r = await fetch('/euroleague/place_bets', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({bets: __SLIP__.bets, date: __SLIP__.date}),
-  });
-  const data = await r.json();
-  if (data.error) { alert('Place failed: ' + data.error); return; }
-  alert(data.message + '\nNew Euroleague bankroll: €' + data.new_balance);
-  location.reload();
-}
+// Chevron sync for the collapsible cards (same convention as football's
+// dashboard: ▴ open, ▾ closed).
+['elPredictions', 'elSlips'].forEach(function (id) {
+  var body = document.getElementById(id + 'Body');
+  var chev = document.getElementById(id + 'Chevron');
+  if (!body || !chev) return;
+  body.addEventListener('show.bs.collapse', function () { chev.textContent = '\u25B4'; });
+  body.addEventListener('hide.bs.collapse', function () { chev.textContent = '\u25BE'; });
+});
 </script>
 {% endblock %}

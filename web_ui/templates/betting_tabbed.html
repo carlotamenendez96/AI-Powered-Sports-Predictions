@@ -149,7 +149,7 @@
     <div class="tab-pane fade {% if active_tab == 'euroleague' %}show active{% endif %}"
          id="tab-euroleague" role="tabpanel" aria-labelledby="tab-euroleague-btn">
       {% if euroleague_summary %}
-      {% with sport_label='EuroLeague',
+      {% with sport_label='EuroLeague', sport_slug='euroleague',
               lane_stats=euroleague_summary.lane_stats,
               history=euroleague_summary.history,
               lane_defaults=euroleague_lane_defaults,
@@ -165,7 +165,7 @@
     <div class="tab-pane fade {% if active_tab == 'nba' %}show active{% endif %}"
          id="tab-nba" role="tabpanel" aria-labelledby="tab-nba-btn">
       {% if nba_summary %}
-      {% with sport_label='NBA',
+      {% with sport_label='NBA', sport_slug='nba',
               lane_stats=nba_summary.lane_stats,
               history=nba_summary.history,
               lane_defaults=nba_lane_defaults,
