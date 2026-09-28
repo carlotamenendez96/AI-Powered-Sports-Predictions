@@ -49,6 +49,25 @@ else
     exit 1
 fi
 
+# Settle bet slips against the freshly-appended results.
+#
+# Added 2026-09-28. Until now this script appended results and stopped, so
+# Euroleague bets debited a bankroll and then stayed OPEN forever — placing
+# them was spending, not betting. NOT the football resolver: that one
+# hardcodes the O/U line at 2.5 (every basketball total is "over 2.5", so
+# every totals bet would settle WON) and assumes a draw exists.
+#
+# Non-fatal: the corpus append above is the irreplaceable step (the API only
+# serves the current season), whereas settlement is idempotent and simply
+# re-runs tomorrow for anything it could not decide today.
+echo ""
+echo "[*] Settling bet slips ..."
+if python3 ml_project/resolve_basketball_bets.py --sport euroleague; then
+    echo "[+] Settlement complete."
+else
+    echo "[!] Settlement failed (non-fatal) — results are appended; re-run to settle."
+fi
+
 echo ""
 echo "========================================"
 echo "    Verification Finished               "

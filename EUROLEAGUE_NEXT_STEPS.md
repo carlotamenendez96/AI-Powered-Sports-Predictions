@@ -259,6 +259,23 @@ Placeholder card first (mirrors NBA Phase A), real panel once the moneyline flow
 - **National-team competitions overlap.** Euroleague-Bs and the FIBA national-team calendars overlap; `target_leagues.json` and `is_international()` already handle the football side — basketball won't share that infra but should follow the same exact-match approach for competition filtering.
 - **Optional historical odds backfill** — if forward-only A/B testing shows odds-aware features would lift Brier (Phase 4-ish), do a one-time OddsPortal pull via a forked/modernised `euroleague_odds` or `OddsHarvester`, cache to `data_sets/Euroleague/odds/`, treat as static training data. Aggressive rate-limiting, single-shot per season, accept the brittleness (OddsPortal DOM changes break it). Defer until the lift is demonstrated, not before.
 
+## Settlement
+
+**Basketball resolver — ✅ BUILT (2026-09-28)**, `ml_project/resolve_basketball_bets.py`, wired into `bin/run_euroleague_verification.sh` after the corpus append (non-fatal: the append is irreplaceable since the API only serves the current season, settlement just re-runs).
+
+Before this, Euroleague bets debited a bankroll and stayed `OPEN` forever — placing them was spending, not betting. The football resolver could not be reused: `resolve_daily_bets.py` hardcodes `res_ou = (h+a) > 2.5`, so every basketball total is "over" and **every** O/U bet would settle WON, and its 1X2 branch assumes a draw exists and expects `1`/`X`/`2` rather than our team-name moneyline.
+
+Four things it does differently, each an improvement rather than an adaptation:
+
+- **Joins on `gameId`, not fuzzy names.** Bets carry the fixture's `gameId` (`E2026_13`) in `match_id`; the corpus is keyed by the same string. Football needs rapidfuzz because its sources disagree on club names; here they cannot.
+- **Each totals bet settles against its OWN line**, read from the bet (`line`/`side`), because the staked row is whichever the ladder selection chose — with a fallback that parses `"Over 168.5"` for slips written before those fields existed.
+- **PUSH is a real state** (integer line, total == line → stake refunded). Football's 2.5-style lines can never push.
+- **Scores the counterfactual without paying it**, into `counterfactual_result`, so ladder-shopping vs the consensus line is measurable on identical games.
+
+Idempotent (only `OPEN` bets are touched) and partial-friendly (a game absent from the corpus leaves its bet `OPEN`). `--sport nba` works off the same code path — the two corpora share a column contract — and `--dry-run` reports without writing or crediting.
+
+Verified on a synthetic slip built from the real settled game `E2026_1` (Crvena Zvezda 77-83 Zalgiris, total 160): ML home LOST / ML away WON +14, Over 154.5 WON +9 while its counterfactual Over 165.5 LOST −10 (the A/B working on one game), unknown game left OPEN, an already-settled bet untouched and not re-credited, lane credits value 24.00 / model 19.00, and a second run settling 0 with no credits. 13 unit cases cover every branch including PUSH and undecidable input.
+
 ## Bugs / fixes queue
 
 **Season-start reactivation (2026-09-27) — four defects, all fixed.** The pipeline was built off-season in May and had never run against a live season. First contact with the 2026-27 season (EuroLeague tipped off 24 Sep) found:
