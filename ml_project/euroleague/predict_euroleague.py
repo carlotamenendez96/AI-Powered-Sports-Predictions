@@ -121,6 +121,15 @@ def predict(date_str: str | None = None) -> int:
 
     from euroleague_calibration import load_calibration_data, apply_home_win_platt, prob_over, total_sigma
     from euroleague_totals import best_ev, counterfactual
+    # The SAME completeness contract the trainer enforces. euroleague_feature_
+    # engineering drops every game with a NaN in these columns, so the model has
+    # literally never seen one — serving such a fixture is extrapolation, not
+    # prediction. Imported rather than restated so the two cannot drift.
+    from euroleague_feature_engineering import L10_METRICS, VENUE_METRICS
+    required_feats = ([f"home_l10_{m}" for m in L10_METRICS]
+                      + [f"away_l10_{m}" for m in L10_METRICS]
+                      + [f"home_venue_l5_{m}" for m in VENUE_METRICS]
+                      + [f"away_venue_l5_{m}" for m in VENUE_METRICS])
     cal = load_calibration_data(CALIBRATION_PATH)
     print(f"[predict] calibration: {'loaded (per-competition)' if cal else 'none — raw probs served'}")
 
@@ -161,9 +170,20 @@ def predict(date_str: str | None = None) -> int:
         # the dashboard can never advertise a different bet than auto_wager
         # stakes. Cf* is the main-line bet we deliberately do NOT place, kept so
         # the two policies can be compared on settled money later.
+        # Training-contract check. Measured 2026-09-28: 75% of EuroCup fixtures
+        # (vs 10% of EuroLeague) carry a NaN in these columns, because 13 of 32
+        # EuroCup teams have ZERO rows in the corpus — the competition churns
+        # its field every season. On those the total model predicts 178.6 mean
+        # against its own training mean of 164.1, and sits +8.6 above the market
+        # (n=15, t=+4.13) where EuroLeague sits at +0.6 (t=+0.37). That is not a
+        # bias to calibrate away, it is the model extrapolating outside the
+        # shape it was fitted on, so those fixtures are not priced.
+        gaps = [c for c in required_feats
+                if feats.get(c) is None or (isinstance(feats.get(c), float) and np.isnan(feats.get(c)))]
+        totals_ok = not gaps
         ladder = odds_row.get("totals") or []
-        pick = best_ev(pred_total, sigma, ladder) if sigma else None
-        cf = counterfactual(pred_total, sigma, ladder) if sigma else None
+        pick = best_ev(pred_total, sigma, ladder) if (sigma and totals_ok) else None
+        cf = counterfactual(pred_total, sigma, ladder) if (sigma and totals_ok) else None
         rows.append({
             "Date": date_str,
             "competition": comp,
@@ -181,6 +201,8 @@ def predict(date_str: str | None = None) -> int:
             "P(Over)": round(p_over, 4) if p_over is not None else "",
             "P(Under)": round(1.0 - p_over, 4) if p_over is not None else "",
             # Staked pick (ladder, best EV) ...
+            "Feature Gaps": len(gaps),
+            "Totals Eligible": 1 if totals_ok else 0,
             "Bet Line": pick["line"] if pick else "",
             "Bet Side": pick["side"] if pick else "",
             "Bet Odds": pick["odds"] if pick else "",

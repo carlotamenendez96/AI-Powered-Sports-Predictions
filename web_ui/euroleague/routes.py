@@ -282,6 +282,15 @@ def auto_wager():
             odds_row = odds_by_pair.get((home, away))
             if not odds_row:
                 return None
+            # Training-contract gate (see predict_euroleague.py). The model is
+            # never trained on games with NaN L10/venue features -- the trainer
+            # dropna's them -- and serving those was the whole EuroCup totals
+            # bias (+8.63 vs market at t=4.13; +4.13 at t=1.11 once gated).
+            # Checked here too, not just in the predictor, because auto_wager
+            # can be pointed at any CSV on disk. A CSV predating the column has
+            # no flag and is allowed through, same as before it existed.
+            if str(row.get('Totals Eligible', '1')).strip() in ('0', '0.0', 'False'):
+                return None
             pred_total, sigma = _to_float(row.get('Predicted Total')), _to_float(row.get('Total Sigma'))
             ladder = odds_row.get('totals') or []
             if not pred_total or not sigma or not ladder:
