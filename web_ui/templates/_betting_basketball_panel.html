@@ -25,48 +25,6 @@
 <div class="row">
   <div class="col-md-10 offset-md-1">
 
-    {# ---- SLIP GENERATOR (parity with football's betting page) ----
-       The per-sport dashboard links here with #generate-slip rather than
-       generating inline, so there is one place where slips are built. #}
-    <div class="card border-dark mb-4" id="generate-slip">
-      <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center">
-        <h4 class="mb-0">🎰 Generate Bet Slip · {{ sport_label|default('') }}</h4>
-        <span class="small text-white-50">three lanes · virtual money</span>
-      </div>
-      <div class="card-body">
-        <div class="d-flex gap-2 align-items-end flex-wrap mb-3">
-          <div style="width: 220px;">
-            <label for="predDate-{{ sport_slug }}" class="form-label small mb-1"
-                   title="Dates with a predictions file and no slip yet.">Prediction date</label>
-            <select id="predDate-{{ sport_slug }}" class="form-select form-select-sm">
-              <option value="">— loading… —</option>
-            </select>
-          </div>
-          <button id="genBtn-{{ sport_slug }}" class="btn btn-dark btn-lg flex-grow-1"
-                  onclick="genSlip_{{ sport_slug }}()">🎰 Generate Slip</button>
-        </div>
-
-        <div id="slipResult-{{ sport_slug }}" style="display:none;">
-          <div class="alert alert-info py-2" id="slipSummary-{{ sport_slug }}"></div>
-          <div class="table-responsive">
-            <table class="table table-sm table-hover">
-              <thead><tr>
-                <th>Lane</th><th>Match</th><th>Pick</th>
-                <th class="text-end">Odds</th><th class="text-end">Conf</th>
-                <th class="text-end">EV</th><th class="text-end">Stake €</th>
-              </tr></thead>
-              <tbody id="slipRows-{{ sport_slug }}"></tbody>
-            </table>
-          </div>
-          <div class="d-flex justify-content-between align-items-center">
-            <div>Total stake: <strong>€<span id="slipTotal-{{ sport_slug }}">0.00</span></strong></div>
-            <button class="btn btn-success" onclick="placeSlip_{{ sport_slug }}()">📥 Place Bets</button>
-          </div>
-        </div>
-        <div id="slipEmpty-{{ sport_slug }}" class="text-muted small" style="display:none;"></div>
-      </div>
-    </div>
-
     <!-- LANE COMPARISON TABLE -->
     <div class="card border-dark mb-4">
       <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center">
@@ -132,6 +90,48 @@
     </div>
 
     <!-- BETTING HISTORY (same tag as football's panel) -->
+    {# ---- SLIP GENERATOR (parity with football's betting page) ----
+       The per-sport dashboard links here with #generate-slip rather than
+       generating inline, so there is one place where slips are built. #}
+    <div class="card border-dark mb-4" id="generate-slip">
+      <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center">
+        <h4 class="mb-0">🎰 Generate Bet Slip · {{ sport_label|default('') }}</h4>
+        <span class="small text-white-50">three lanes · virtual money</span>
+      </div>
+      <div class="card-body">
+        <div class="d-flex gap-2 align-items-end flex-wrap mb-3">
+          <div style="width: 220px;">
+            <label for="predDate-{{ sport_slug }}" class="form-label small mb-1"
+                   title="Dates with a predictions file and no slip yet.">Prediction date</label>
+            <select id="predDate-{{ sport_slug }}" class="form-select form-select-sm">
+              <option value="">— loading… —</option>
+            </select>
+          </div>
+          <button id="genBtn-{{ sport_slug }}" class="btn btn-dark btn-lg flex-grow-1"
+                  onclick="genSlip_{{ sport_slug }}()">🎰 Generate Slip</button>
+        </div>
+
+        <div id="slipResult-{{ sport_slug }}" style="display:none;">
+          <div class="alert alert-info py-2" id="slipSummary-{{ sport_slug }}"></div>
+          <div class="table-responsive">
+            <table class="table table-sm table-hover">
+              <thead><tr>
+                <th>Lane</th><th>Match</th><th>Pick</th>
+                <th class="text-end">Odds</th><th class="text-end">Conf</th>
+                <th class="text-end">EV</th><th class="text-end">Stake €</th>
+              </tr></thead>
+              <tbody id="slipRows-{{ sport_slug }}"></tbody>
+            </table>
+          </div>
+          <div class="d-flex justify-content-between align-items-center">
+            <div>Total stake: <strong>€<span id="slipTotal-{{ sport_slug }}">0.00</span></strong></div>
+            <button class="btn btn-success" onclick="placeSlip_{{ sport_slug }}()">📥 Place Bets</button>
+          </div>
+        </div>
+        <div id="slipEmpty-{{ sport_slug }}" class="text-muted small" style="display:none;"></div>
+      </div>
+    </div>
+
     <h3 class="mt-4 mb-3 border-bottom pb-2">📜 Betting History</h3>
     {% if history %}
     {% for slip in history %}
@@ -165,6 +165,21 @@
             {% endif %}
           </span>
         </div>
+        {# Cancel is only offered while nothing has settled: it refunds every
+           lane's stake, which would be wrong once some bets have resolved.
+           Plain URL rather than url_for() because this partial is shared with
+           NBA, whose blueprint is not always registered. #}
+        {% set _all_open = slip.status == 'OPEN' and slip.bets|length > 0
+             and slip.bets|rejectattr('status', 'equalto', 'OPEN')|list|length == 0 %}
+        {% if _all_open %}
+        <form action="/{{ sport_slug }}/cancel_slip/{{ slip.date }}" method="post" class="m-0"
+              onsubmit="return confirm('Cancel this slip? Every bet is still OPEN, so all stakes are refunded to their lane bankrolls and the slip is archived. This cannot be undone.');">
+          <button type="submit" class="btn btn-outline-danger btn-sm"
+                  title="Refunds every lane's stake and archives the slip (virtual money).">
+            ❌ Cancel Slip
+          </button>
+        </form>
+        {% endif %}
       </div>
       <div class="card-body p-0 collapse" id="bbslip-body-{{ loop.index }}">
         <div class="table-responsive">
@@ -216,9 +231,21 @@
                   {% elif bet.result == 'LOST' %}
                   <span class="badge bg-danger">LOST</span>
                   {% elif bet.status == 'VOID' %}
-                  <span class="badge bg-warning text-dark">VOID</span>
+                  <span class="badge bg-warning text-dark"
+                        title="Voided{% if bet.voided_timestamp %} at {{ bet.voided_timestamp }}{% endif %} — stake refunded">VOID</span>
                   {% else %}
-                  <span class="badge bg-secondary">OPEN</span>
+                  <div class="d-flex align-items-center gap-1">
+                    <span class="badge bg-secondary">OPEN</span>
+                    {% if bet.bet_id %}
+                    {# Voids cascade across every lane holding this bet_id. #}
+                    <form action="/{{ sport_slug }}/void_bet/{{ bet.bet_id }}" method="post" class="m-0"
+                          onsubmit="return confirm('Mark this bet VOID (game postponed/cancelled)? Stake €{{ bet.get('stake_units', 0)|round(2) }} is refunded to the {{ _lane }} bankroll.');"
+                          title="For postponed / cancelled games that will never settle.">
+                      <button type="submit" class="btn btn-sm btn-outline-warning py-0 px-1"
+                              style="font-size: 0.7rem;">⊘ Void</button>
+                    </form>
+                    {% endif %}
+                  </div>
                   {% endif %}
                 </td>
               </tr>

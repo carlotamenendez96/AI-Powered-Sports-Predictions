@@ -587,6 +587,79 @@ def retrain():
     return redirect(url_for('euroleague.index'))
 
 
+def _find_bet(bet_id: str):
+    """Locate one bet by bet_id across this sport's slips. Football's
+    equivalent also resolves a live match; basketball has no in-play feed, so
+    this is the plain lookup."""
+    for path in sorted(glob.glob(os.path.join(_out_dir(), 'bets_*.json')), reverse=True):
+        try:
+            slip = json.load(open(path))
+        except (json.JSONDecodeError, OSError):
+            continue
+        for bet in (slip.get('bets') or []):
+            if bet.get('bet_id') == bet_id:
+                return bet
+    return None
+
+
+@euroleague_bp.route('/void_bet/<bet_id>', methods=['POST'])
+def void_bet(bet_id):
+    """Mark an OPEN bet VOID — postponed / cancelled games that will never
+    settle. The backend cascades across every lane holding the same bet_id and
+    refunds each lane's stake, exactly as football's does."""
+    if '/' in bet_id or '..' in bet_id:
+        flash('Invalid bet_id.', 'danger')
+        return redirect(request.referrer or url_for('euroleague.index'))
+    bet = _find_bet(bet_id)
+    if bet is None:
+        flash(f'Bet not found: {bet_id}.', 'warning')
+        return redirect(request.referrer or url_for('euroleague.index'))
+    if not g.backend.void_bet(bet):
+        flash('No OPEN bets found to void (sibling lanes may already be settled).', 'info')
+        return redirect(request.referrer or url_for('euroleague.index'))
+
+    refund, lanes = 0.0, set()
+    slip_date = bet_id.split(':', 1)[0] if ':' in bet_id else ''
+    path = os.path.join(_out_dir(), f'bets_{slip_date}.json')
+    if os.path.exists(path):
+        try:
+            for b in (json.load(open(path)).get('bets') or []):
+                if b.get('bet_id') == bet_id and b.get('status') == 'VOID':
+                    refund += float(b.get('stake_units', 0) or 0)
+                    lanes.add(b.get('lane', 'value'))
+        except (json.JSONDecodeError, OSError):
+            pass
+    flash(f"Voided across {len(lanes)} lane(s) ({', '.join(sorted(lanes)) or 'unknown'}); "
+          f"€{refund:.2f} refunded.", 'success')
+    return redirect(request.referrer or url_for('euroleague.index'))
+
+
+@euroleague_bp.route('/cancel_slip/<date>', methods=['POST'])
+def cancel_slip(date):
+    """Cancel a whole slip while every bet on it is still OPEN — refunds each
+    lane and closes it. Virtual money only."""
+    if '/' in date or '..' in date or len(date) != 10:
+        flash('Invalid slip date.', 'danger')
+        return redirect(request.referrer or url_for('euroleague.index'))
+    ok, message = g.backend.cancel_slip(date)
+    if not ok:
+        flash(f'Could not cancel slip {date}: {message}', 'warning')
+        return redirect(request.referrer or url_for('euroleague.index'))
+
+    # Archive so a cancelled slip stops cluttering the history, mirroring
+    # football. Non-fatal: the refund already happened and is what matters.
+    src = os.path.join(_out_dir(), f'bets_{date}.json')
+    try:
+        hist = os.path.join(_out_dir(), 'history')
+        os.makedirs(hist, exist_ok=True)
+        if os.path.exists(src):
+            os.replace(src, os.path.join(hist, f'bets_{date}.json'))
+        flash(f'Slip {date} cancelled and archived. {message}', 'success')
+    except OSError as e:
+        flash(f'Slip {date} cancelled ({message}), but archiving failed: {e}', 'warning')
+    return redirect(request.referrer or url_for('euroleague.index'))
+
+
 @euroleague_bp.route('/view/<filename>')
 def view_file(filename):
     """Render one predictions CSV. The dashboard links here rather than
