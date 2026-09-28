@@ -116,7 +116,8 @@
           <div class="table-responsive">
             <table class="table table-sm table-hover">
               <thead><tr>
-                <th>Lane</th><th>Match</th><th>Pick</th>
+                <th>Lane</th><th>Match</th>
+                <th title="ML = moneyline (winner), O/U = total points.">Market</th><th>Pick</th>
                 <th class="text-end">Odds</th><th class="text-end">Conf</th>
                 <th class="text-end">EV</th><th class="text-end">Stake €</th>
               </tr></thead>
@@ -274,6 +275,17 @@
 
   const $ = (id) => document.getElementById(id + "-" + SLUG);
 
+  // Lane colours must match the rest of the app: value = soft lavender
+  // (.bg-lane-value, defined in theme.css), conviction = amber, model = sky.
+  // Anything else and the generated slip reads as a different taxonomy from
+  // the history table right above it.
+  const LANE_BADGE = {
+    value: "bg-lane-value text-dark",
+    conviction: "bg-warning text-dark",
+    model: "bg-info text-dark",
+  };
+  const laneClass = (l) => LANE_BADGE[l] || "bg-secondary";
+
   // Populate the date picker from the sport's own available-dates endpoint.
   fetch(`/${SLUG}/predictions/available`)
     .then(r => r.json())
@@ -302,16 +314,20 @@
     }
     slip = d;
     $("slipEmpty").style.display = "none";
-    $("slipSummary").innerHTML = Object.entries(d.lanes || {}).map(([n, i]) => {
-      const badge = n === "value" ? "bg-primary" : n === "conviction" ? "bg-warning text-dark" : "bg-info text-dark";
-      return `<span class="badge ${badge} me-2">${n}: ${i.count} bets · €${i.total_stake}` +
-             `${i.scaled ? " (cap-scaled)" : ""}</span>`;
+    $("slipSummary").innerHTML = Object.entries(d.lanes || {}).map(([n, i]) =>
+      `<span class="badge ${laneClass(n)} me-2">${n}: ${i.count} bets · €${i.total_stake}` +
+      `${i.scaled ? " (cap-scaled)" : ""}</span>`).join("");
+    $("slipRows").innerHTML = d.bets.map(b => {
+      const mkt = b.type === "O/U" ? "bg-secondary" : "bg-dark";
+      const ev = Number(b.ev);
+      return `<tr><td><span class="badge ${laneClass(b.lane)}">${b.lane}</span></td>` +
+        `<td>${b.match}</td>` +
+        `<td><span class="badge ${mkt}">${b.type || "ML"}</span></td>` +
+        `<td class="fw-bold">${b.selection}</td><td class="text-end">${b.odds}</td>` +
+        `<td class="text-end">${b.conf}</td>` +
+        `<td class="text-end ${ev > 0 ? "text-success" : ev < 0 ? "text-danger" : ""}">${b.ev}</td>` +
+        `<td class="text-end">${Number(b.stake_units).toFixed(2)}</td></tr>`;
     }).join("");
-    $("slipRows").innerHTML = d.bets.map(b =>
-      `<tr><td><span class="badge bg-secondary">${b.lane}</span></td><td>${b.match}</td>` +
-      `<td>${b.selection}</td><td class="text-end">${b.odds}</td>` +
-      `<td class="text-end">${b.conf}</td><td class="text-end">${b.ev}</td>` +
-      `<td class="text-end">${Number(b.stake_units).toFixed(2)}</td></tr>`).join("");
     $("slipTotal").textContent = Number(d.total_stake).toFixed(2);
     $("slipResult").style.display = "";
   };
