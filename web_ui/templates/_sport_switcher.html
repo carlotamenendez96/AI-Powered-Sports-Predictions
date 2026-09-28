@@ -9,6 +9,9 @@
 
    Current sport is detected from request.blueprint, so this partial needs no
    context and can be included from any sport page.
+
+   Sports only — the navbar already carries "All sports" and the betting
+   link, and duplicating them here just made the row noisier.
 --------------------------------------------------------------------------- #}
 <div class="d-flex align-items-center gap-2 mb-3 flex-wrap" role="group" aria-label="Switch sport">
   {% for sport in sports %}
@@ -37,8 +40,4 @@
     {% endif %}
   {% endfor %}
 
-  <span class="vr mx-1 d-none d-sm-inline"></span>
-  <a class="btn btn-sm btn-outline-secondary" href="/" title="All sports + portfolio summary">🏆 All</a>
-  <a class="btn btn-sm btn-outline-secondary" href="/betting{% if request.blueprint %}?tab={{ request.blueprint }}{% endif %}"
-     title="Betting page for this sport">💸 Betting</a>
 </div>
