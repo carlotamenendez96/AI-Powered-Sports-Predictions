@@ -774,7 +774,9 @@ def get_status():
                 # shows a notice rather than "Prediction failed".
                 empty = (poll == EXIT_NO_FIXTURES)
                 # Capture last lines of log directly
-                log_file = os.path.join(LOG_DIR, f"{task_name}.log")
+                # The task's own log name when it recorded one ('update' writes
+                # update_data.log), else the <task>.log convention.
+                log_file = os.path.join(LOG_DIR, task_info.get('log') or f"{task_name}.log")
                 error_msg = 'Unknown error'
                 if os.path.exists(log_file):
                      try:
@@ -2396,7 +2398,8 @@ def update_data():
         log_file = open(os.path.join(LOG_DIR, 'update_data.log'), 'w')
         proc = subprocess.Popen(['venv/bin/python', script_path], cwd=PROJECT_ROOT, stdout=log_file, stderr=subprocess.STDOUT)
         
-        TASKS['update'] = {'process': proc, 'start_time': datetime.datetime.now()}
+        TASKS['update'] = {'process': proc, 'start_time': datetime.datetime.now(),
+                           'log': 'update_data.log'}
         
         flash('Data update started! Check <a href="/logs/update_data.log">logs</a> for status.', 'success')
     except Exception as e:

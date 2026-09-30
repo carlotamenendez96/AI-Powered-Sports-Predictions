@@ -32,110 +32,152 @@
   </div>
 </div>
 
-<!-- Row 1: Actions (full width, Prediction + Verification side-by-side) -->
-<div class="card mb-4">
-    <div class="card-header bg-primary text-white py-2">Actions</div>
-    <div class="card-body py-3">
-        <!-- Row 1: Prediction controls + Generate Slip -->
-        <div class="row g-4 align-items-start">
-            <!-- Prediction (left) -->
-            <div class="col-md-6">
-                <form action="/football/predict" method="post" id="predictForm">
-                    <label class="form-label fw-bold small mb-1">🚀 Prediction</label>
-                    <div class="input-group input-group-sm mb-1">
-                        <input type="date" class="form-control" name="date" id="predictDate" title="Target date (optional)">
-                        <button type="submit" class="btn btn-success" id="predictBtn">Run</button>
-                    </div>
-                    <div class="form-check form-check-inline small">
-                        <input class="form-check-input" type="checkbox" name="force" id="forceScrape">
-                        <label class="form-check-label" for="forceScrape">Force scrape (overwrite data)</label>
-                    </div>
-                </form>
-                <div id="predictStatus" style="display: none;" class="mt-2">
-                    <div class="d-flex align-items-center gap-2">
-                        <small class="text-muted">Status: <span id="predictState">Running...</span></small>
-                        <button class="btn btn-outline-danger btn-sm py-0" onclick="stopTask('predict')">🛑 Stop</button>
-                        <form id="stopPredictForm" action="/stop/predict" method="post" style="display:none;"></form>
-                    </div>
-                    <div class="progress mt-1" style="height: 4px;">
-                        <div class="progress-bar progress-bar-striped progress-bar-animated bg-success"
-                            role="progressbar" style="width: 100%"></div>
-                    </div>
-                </div>
-                <div id="predictError" class="alert alert-danger alert-dismissible mt-2 mb-0 py-2 small"
-                    style="display:none;">
-                    <strong id="predictErrorTitle">Prediction failed.</strong>
-                    <pre id="predictErrorMsg" class="mb-0 mt-1"
-                        style="white-space:pre-wrap;font-size:0.75rem;"></pre>
-                    <button type="button" class="btn-close" onclick="dismissError('predict')"></button>
-                </div>
-            </div>
-
-            <!-- Generate Slip (right) -->
-            <div class="col-md-6">
-                <label class="form-label fw-bold small mb-1">💸 Betting</label>
-                <div>
-                    <a href="/football/betting#generate-slip" class="btn btn-outline-success btn-sm">
-                        💸 Generate Bet Slip
-                    </a>
-                </div>
-                <div class="form-text small mb-0">Opens the betting page's three-lane slip generator.</div>
-            </div>
-        </div>
-
-        <!-- Row 2: Verification controls -->
-        <div class="row g-4 mt-1">
-            <div class="col-md-6">
-                <form action="/football/verify" method="post" id="verifyForm">
-                    <label class="form-label fw-bold small mb-1">✅ Verification</label>
-                    <div class="input-group input-group-sm">
-                        <input type="date" class="form-control" name="date" id="verifyDate" title="Target date (optional)">
-                        <button type="submit" class="btn btn-warning" id="verifyBtn">Run</button>
-                    </div>
-                </form>
-                <div id="verifyStatus" style="display: none;" class="mt-2">
-                    <div class="d-flex align-items-center gap-2">
-                        <small class="text-muted">Status: <span id="verifyState">Running...</span></small>
-                        <button class="btn btn-outline-danger btn-sm py-0" onclick="stopTask('verify')">🛑 Stop</button>
-                        <form id="stopVerifyForm" action="/stop/verify" method="post" style="display:none;"></form>
-                    </div>
-                    <div class="progress mt-1" style="height: 4px;">
-                        <div class="progress-bar progress-bar-striped progress-bar-animated bg-warning"
-                            role="progressbar" style="width: 100%"></div>
-                    </div>
-                </div>
-                <div id="verifyError" class="alert alert-danger alert-dismissible mt-2 mb-0 py-2 small"
-                    style="display:none;">
-                    <strong>Verification failed.</strong>
-                    <pre id="verifyErrorMsg" class="mb-0 mt-1"
-                        style="white-space:pre-wrap;font-size:0.75rem;"></pre>
-                    <button type="button" class="btn-close" onclick="dismissError('verify')"></button>
-                </div>
-            </div>
-
-            <!-- Data (right) — football-specific data/retrain actions (moved off the generic top menu) -->
-            <div class="col-md-6">
-                <label class="form-label fw-bold small mb-1">💾 Data</label>
-                <div class="d-flex flex-wrap gap-2">
-                    <form action="/football/update_data" method="post" class="m-0"
-                        onsubmit="return confirm('Update historical data? This will download the latest match results.');">
-                        <button class="btn btn-outline-secondary btn-sm" type="submit"
-                            title="Download the latest finished-match results for the current season.">Update Results</button>
-                    </form>
-                    <form action="/football/update_leagues" method="post" class="m-0"
-                        onsubmit="return confirm('Update League Standings & Form? This might take a few minutes.');">
-                        <button class="btn btn-outline-secondary btn-sm" type="submit"
-                            title="Re-scrape current standings + form tables (inputs to inference features).">Update Standings &amp; Form</button>
-                    </form>
-                    <form action="/football/retrain_model" method="post" class="m-0"
-                        onsubmit="return confirm('Full Pipeline: Update Data + Form + Retrain Model. This will take several minutes.');">
-                        <button class="btn btn-outline-primary btn-sm fw-bold" type="submit"
-                            title="Full pipeline: update data + standings, retrain models, refit calibrators.">🔄 Retrain Model (Full Pipeline)</button>
-                    </form>
-                </div>
-            </div>
-        </div>
+{# ---- Action row (same layout as the Euroleague dashboard) ----
+   Element ids (predictForm/predictBtn/predictStatus/... verify*) are what the
+   status/error script below reads — keep them if this is rearranged. #}
+<div class="row g-2 mb-3 align-items-start">
+  <div class="col-auto">
+    <form action="/football/predict" method="post" id="predictForm" class="m-0">
+      <label class="form-label small mb-1 d-block">🔮 Predict</label>
+      <div class="input-group input-group-sm">
+        <input type="date" class="form-control" name="date" id="predictDate" title="Target date (optional; default tomorrow)">
+        <button type="submit" class="btn btn-primary" id="predictBtn">Run</button>
+      </div>
+      <div class="form-check small mt-1 mb-0">
+        <input class="form-check-input" type="checkbox" name="force" id="forceScrape">
+        <label class="form-check-label" for="forceScrape">Force scrape (overwrite data)</label>
+      </div>
+    </form>
+    <div id="predictStatus" style="display: none;" class="mt-2">
+      <div class="d-flex align-items-center gap-2">
+        <small class="text-muted">Status: <span id="predictState">Running...</span></small>
+        <button class="btn btn-outline-danger btn-sm py-0" onclick="stopTask('predict')">🛑 Stop</button>
+        <form id="stopPredictForm" action="/stop/predict" method="post" style="display:none;"></form>
+      </div>
+      <div class="progress mt-1" style="height: 4px;">
+        <div class="progress-bar progress-bar-striped progress-bar-animated bg-primary"
+             role="progressbar" style="width: 100%"></div>
+      </div>
     </div>
+    <div id="predictError" class="alert alert-danger alert-dismissible mt-2 mb-0 py-2 small"
+         style="display:none; max-width: 28rem;">
+      <strong id="predictErrorTitle">Prediction failed.</strong>
+      <pre id="predictErrorMsg" class="mb-0 mt-1" style="white-space:pre-wrap;font-size:0.75rem;"></pre>
+      <button type="button" class="btn-close" onclick="dismissError('predict')"></button>
+    </div>
+  </div>
+
+  <div class="col-auto">
+    <form action="/football/verify" method="post" id="verifyForm" class="m-0">
+      <label class="form-label small mb-1 d-block">✅ Verify</label>
+      <div class="input-group input-group-sm">
+        <input type="date" class="form-control" name="date" id="verifyDate" title="Target date (optional; default yesterday)">
+        <button type="submit" class="btn btn-outline-primary" id="verifyBtn">Run</button>
+      </div>
+    </form>
+    <div id="verifyStatus" style="display: none;" class="mt-2">
+      <div class="d-flex align-items-center gap-2">
+        <small class="text-muted">Status: <span id="verifyState">Running...</span></small>
+        <button class="btn btn-outline-danger btn-sm py-0" onclick="stopTask('verify')">🛑 Stop</button>
+        <form id="stopVerifyForm" action="/stop/verify" method="post" style="display:none;"></form>
+      </div>
+      <div class="progress mt-1" style="height: 4px;">
+        <div class="progress-bar progress-bar-striped progress-bar-animated bg-warning"
+             role="progressbar" style="width: 100%"></div>
+      </div>
+    </div>
+    <div id="verifyError" class="alert alert-danger alert-dismissible mt-2 mb-0 py-2 small"
+         style="display:none; max-width: 28rem;">
+      <strong>Verification failed.</strong>
+      <pre id="verifyErrorMsg" class="mb-0 mt-1" style="white-space:pre-wrap;font-size:0.75rem;"></pre>
+      <button type="button" class="btn-close" onclick="dismissError('verify')"></button>
+    </div>
+  </div>
+
+  <div class="col-auto">
+    <form action="/football/update_data" method="post" class="m-0"
+          onsubmit="return confirm('Update historical data? This will download the latest match results.');">
+      <label class="form-label small mb-1 d-block">&nbsp;</label>
+      <button class="btn btn-outline-secondary btn-sm" type="submit" id="updateBtn"
+              title="Download the latest finished-match results for the current season.">📥 Update Results</button>
+    </form>
+    <div id="updateStatus" style="display:none;" class="mt-2">
+      <div class="d-flex align-items-center gap-2">
+        <small class="text-muted"><span id="updateState">Running...</span></small>
+        <form action="/stop/update" method="post" class="m-0"
+              onsubmit="return confirm('Stop the update task?');">
+          <button type="submit" class="btn btn-outline-danger btn-sm py-0">🛑 Stop</button>
+        </form>
+      </div>
+      <div class="progress mt-1" style="height: 4px;">
+        <div class="progress-bar progress-bar-striped progress-bar-animated bg-secondary"
+             role="progressbar" style="width: 100%"></div>
+      </div>
+    </div>
+    <div id="updateError" class="alert alert-danger alert-dismissible mt-2 mb-0 py-2 small" style="display:none; max-width: 28rem;">
+      <strong>Update Results failed.</strong>
+      <pre id="updateErrorMsg" class="mb-0 mt-1" style="white-space:pre-wrap;font-size:0.75rem;"></pre>
+      <button type="button" class="btn-close" onclick="this.parentElement.style.display='none'"></button>
+    </div>
+  </div>
+  <div class="col-auto">
+    <form action="/football/update_leagues" method="post" class="m-0"
+          onsubmit="return confirm('Update League Standings &amp; Form? This takes ~17 minutes.');">
+      <label class="form-label small mb-1 d-block">&nbsp;</label>
+      <button class="btn btn-outline-secondary btn-sm" type="submit" id="leaguesBtn"
+              title="Re-scrape current standings + form tables (inputs to inference features).">📊 Update Standings</button>
+    </form>
+    <div id="leaguesStatus" style="display:none;" class="mt-2">
+      <div class="d-flex align-items-center gap-2">
+        <small class="text-muted"><span id="leaguesState">Running...</span></small>
+        <form action="/stop/leagues" method="post" class="m-0"
+              onsubmit="return confirm('Stop the leagues task?');">
+          <button type="submit" class="btn btn-outline-danger btn-sm py-0">🛑 Stop</button>
+        </form>
+      </div>
+      <div class="progress mt-1" style="height: 4px;">
+        <div class="progress-bar progress-bar-striped progress-bar-animated bg-secondary"
+             role="progressbar" style="width: 100%"></div>
+      </div>
+    </div>
+    <div id="leaguesError" class="alert alert-danger alert-dismissible mt-2 mb-0 py-2 small" style="display:none; max-width: 28rem;">
+      <strong>Update Standings failed.</strong>
+      <pre id="leaguesErrorMsg" class="mb-0 mt-1" style="white-space:pre-wrap;font-size:0.75rem;"></pre>
+      <button type="button" class="btn-close" onclick="this.parentElement.style.display='none'"></button>
+    </div>
+  </div>
+  <div class="col-auto">
+    <form action="/football/retrain_model" method="post" class="m-0"
+          onsubmit="return confirm('Full Pipeline: Update Data + Form + Retrain Model. This will take several minutes.');">
+      <label class="form-label small mb-1 d-block">&nbsp;</label>
+      <button class="btn btn-outline-secondary btn-sm" type="submit" id="retrainBtn"
+              title="Full pipeline: update data + standings, retrain models, refit calibrators.">🔄 Retrain</button>
+    </form>
+    <div id="retrainStatus" style="display:none;" class="mt-2">
+      <div class="d-flex align-items-center gap-2">
+        <small class="text-muted"><span id="retrainState">Running...</span></small>
+        <form action="/stop/retrain" method="post" class="m-0"
+              onsubmit="return confirm('Stop the retrain task?');">
+          <button type="submit" class="btn btn-outline-danger btn-sm py-0">🛑 Stop</button>
+        </form>
+      </div>
+      <div class="progress mt-1" style="height: 4px;">
+        <div class="progress-bar progress-bar-striped progress-bar-animated bg-secondary"
+             role="progressbar" style="width: 100%"></div>
+      </div>
+    </div>
+    <div id="retrainError" class="alert alert-danger alert-dismissible mt-2 mb-0 py-2 small" style="display:none; max-width: 28rem;">
+      <strong>Retrain failed.</strong>
+      <pre id="retrainErrorMsg" class="mb-0 mt-1" style="white-space:pre-wrap;font-size:0.75rem;"></pre>
+      <button type="button" class="btn-close" onclick="this.parentElement.style.display='none'"></button>
+    </div>
+  </div>
+
+  <div class="col-auto ms-auto">
+    <label class="form-label small mb-1 d-block">💸 Betting</label>
+    <a href="/football/betting#generate-slip" class="btn btn-outline-success btn-sm">💸 Generate Bet Slip</a>
+    <div class="form-text small mb-0">Opens the betting page's three-lane slip generator.</div>
+  </div>
 </div>
 
 <!-- Row 3: Recent Reports (collapsible, default open) -->
@@ -758,6 +800,48 @@
     }
 
     setInterval(updateStatus, 2000);
+
+    // Data actions (results / standings / retrain): same running → status +
+    // Stop, failed → log tail, as Predict/Verify above. A run this page watched
+    // finish reloads the page.
+    const DATA_TASKS = { update: 'Updating results', leagues: 'Updating standings', retrain: 'Retraining' };
+    const dataSeenRunning = {};
+    function updateDataStatus() {
+        fetch('/status').then(r => r.json()).then(data => {
+            Object.entries(DATA_TASKS).forEach(([t, label]) => {
+                const info = data[t] || { state: 'idle' };
+                const st = document.getElementById(t + 'Status');
+                const err = document.getElementById(t + 'Error');
+                const btn = document.getElementById(t + 'Btn');
+                if (!st) return;
+                if (info.state === 'running') {
+                    dataSeenRunning[t] = true;
+                    st.style.display = 'block';
+                    err.style.display = 'none';
+                    btn.disabled = true;
+                    let el = '';
+                    if (info.started) {
+                        const s = Math.max(0, Math.floor((Date.now() - new Date(info.started).getTime()) / 1000));
+                        el = ` · ${Math.floor(s / 60)}m ${s % 60}s`;
+                    }
+                    document.getElementById(t + 'State').innerText = label + el + '...';
+                    return;
+                }
+                st.style.display = 'none';
+                btn.disabled = false;
+                if (info.state === 'error' && dataSeenRunning[t]) {
+                    document.getElementById(t + 'ErrorMsg').innerText = info.msg || 'Check the log.';
+                    err.style.display = 'block';
+                }
+                if (dataSeenRunning[t] && info.state === 'completed') {
+                    dataSeenRunning[t] = false;
+                    location.reload();
+                }
+            });
+        }).catch(() => {});
+    }
+    updateDataStatus();
+    setInterval(updateDataStatus, 2000);
 
     // Persist collapse state for each collapsible card across visits.
     // Each entry: [collapseBodyId, chevronId, localStorageKey, defaultOpen].
