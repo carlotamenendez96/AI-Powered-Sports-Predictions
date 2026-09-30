@@ -7,6 +7,24 @@
     .markets-table .market-divider {
         border-right: 1px solid #444 !important;
     }
+
+    /* Collapsible card headers: muted surface + a coloured left accent
+       instead of a solid primary/warning/success/danger bar. The accent keeps
+       the status signal (stale backtest = amber, edge verdict = green/red). */
+    .card-header[data-bs-toggle="collapse"] {
+        --hdr-accent: var(--bs-primary);
+        background-color: var(--bs-tertiary-bg) !important;
+        color: var(--bs-body-color) !important;
+        border-left: 4px solid var(--hdr-accent);
+    }
+    .card-header[data-bs-toggle="collapse"].bg-warning   { --hdr-accent: var(--bs-warning); }
+    .card-header[data-bs-toggle="collapse"].bg-success   { --hdr-accent: var(--bs-success); }
+    .card-header[data-bs-toggle="collapse"].bg-danger    { --hdr-accent: var(--bs-danger); }
+    .card-header[data-bs-toggle="collapse"].bg-secondary { --hdr-accent: var(--bs-secondary); }
+    .card-header[data-bs-toggle="collapse"] .text-white,
+    .card-header[data-bs-toggle="collapse"] .text-dark { color: inherit !important; }
+    /* The card borders echoed the old header colour; tone them down too. */
+    .card:has(> .card-header[data-bs-toggle="collapse"]) { border-color: var(--bs-border-color) !important; }
 </style>
 
 {% include "_sport_switcher.html" %}

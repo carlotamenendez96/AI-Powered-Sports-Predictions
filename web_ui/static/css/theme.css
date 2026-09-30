@@ -29,8 +29,9 @@
     --bs-danger:      #c0392b;
     --bs-danger-rgb:  192, 57, 43;
 
-    /* Body — off-white reduces eye strain vs pure white */
-    --bs-body-bg:     #fafafa;
+    /* Body — soft grey (darkened 2026-09-30 from #fafafa) so white cards
+     * separate from the page instead of blending into it. */
+    --bs-body-bg:     #e9ecef;
     --bs-body-color:  #2c3e50;
 
     /* Slightly softer card corners */
@@ -101,17 +102,17 @@ body, .card, .table, .navbar, .badge, .btn,
     --bs-danger:      #d65a4d;
     --bs-danger-rgb:  214, 90, 77;
 
-    /* Surface tokens — body sits in dark-grey territory (not near-black),
-     * cards lift ~8% off body so components stand out clearly without
-     * needing prominent borders. */
-    --bs-body-bg:        #2e333a;
+    /* Surface tokens — darkened 2026-09-30 (body was #2e333a, cards
+     * #404553). Body is near-black; cards keep a clear lift off it so
+     * components still stand out without prominent borders. */
+    --bs-body-bg:        #1a1d21;
     --bs-body-color:     #dde0e5;
-    --bs-secondary-bg:   #3a3f48;
-    --bs-tertiary-bg:    #353a42;
-    --bs-border-color:   #4a5060;
+    --bs-secondary-bg:   #2c3038;
+    --bs-tertiary-bg:    #262a31;
+    --bs-border-color:   #3a3f4a;
 
     /* Cards: clearly lighter than body so they "float". */
-    --bs-card-bg:        #404553;
+    --bs-card-bg:        #23272e;
 }
 
 /* Dark-mode card outline is barely visible on the body bg by default. */
@@ -122,7 +123,7 @@ body, .card, .table, .navbar, .badge, .btn,
 }
 
 /* Table-success / -danger tints — keep readable against the lifted card bg
- * (#404553). Slightly lighter than before so they still pop on cards. */
+ * (#23272e since 2026-09-30). Still clearly distinct on the darker card. */
 [data-bs-theme="dark"] .table-success {
     --bs-table-bg:    #335c48;
     --bs-table-color: #cdedd9;
