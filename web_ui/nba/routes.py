@@ -44,11 +44,15 @@ from flask import (
 )
 
 from betting_backend import NbaBettingBackend, make_bet_id
+from sport_archive import archive_file
 from sports_config import LANES, get_bankroll, get_sport_config, lane_bankrolls, update_bankroll
 
 
 nba_bp = Blueprint('nba', __name__)
 NBA_TASKS = {}   # {'predict'|'verify'|'retrain': Popen} — checked by /status
+# Per-run metadata for the status bars: {'target_date', 'start_time'}. Kept
+# beside NBA_TASKS so /status's shared Popen-dict loop keeps one shape.
+NBA_TASK_META = {}
 
 NBA_OUTPUT_DIR = 'output_basketball'
 
@@ -444,6 +448,20 @@ def place_bets():
                 )
             b.setdefault('mode', 'virtual')
 
+        # Never overwrite a slip that still holds real bets — the old write
+        # replaced it wholesale, orphaning its stakes from the record.
+        _existing = os.path.join(_out_dir(), f"bets_{date_str}.json")
+        if os.path.exists(_existing):
+            try:
+                with open(_existing) as f:
+                    _prev = json.load(f)
+                _prev_bets = _prev if isinstance(_prev, list) else _prev.get('bets', [])
+            except (OSError, ValueError):
+                _prev_bets = [{}]   # unreadable: be conservative
+            if any(str(b.get('status', '')).upper() != 'VOID' for b in _prev_bets):
+                return jsonify({'error': f"A slip for {date_str} already exists "
+                                         f"(bets_{date_str}.json). Cancel or settle it first."}), 409
+
         current = lane_bankrolls('nba')
         for lane, stake in stake_by_lane.items():
             if stake > current[lane] + 1e-6:
@@ -486,7 +504,8 @@ def place_bets():
 # Bin-script task triggers (preserved from the previous routes file)
 # ---------------------------------------------------------------------------
 
-def _kick(task: str, script: str, args: list, success_msg: str) -> None:
+def _kick(task: str, script: str, args: list, success_msg: str,
+          target_date: Optional[str] = None) -> None:
     """Spawn a bin script as a tracked background task.
 
     ``args`` is forwarded positionally to the bin script — the predict /
@@ -505,17 +524,42 @@ def _kick(task: str, script: str, args: list, success_msg: str) -> None:
         proc = subprocess.Popen(['/bin/bash', script_path, *args], cwd=project_root,
                                 stdout=log_f, stderr=subprocess.STDOUT)
         NBA_TASKS[task] = proc
+        NBA_TASK_META[task] = {'target_date': target_date,
+                               'start_time': datetime.datetime.now()}
         flash(success_msg, "success")
     except Exception as e:
         flash(f"Failed to start NBA {task}: {e}", "danger")
+
+
+@nba_bp.route('/stop/<task>', methods=['POST'])
+def stop_task(task):
+    proc = NBA_TASKS.get(task)
+    if proc and proc.poll() is None:
+        try:
+            proc.terminate()
+            try:
+                proc.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+            # Drop the handle so /status reports idle rather than a
+            # signal-exit 'error' for a run the user stopped on purpose.
+            NBA_TASKS[task] = None
+            flash(f"NBA {task} stopped.", "warning")
+        except Exception as e:
+            flash(f"Error stopping NBA {task}: {e}", "danger")
+    else:
+        flash(f"No running NBA {task} task found.", "secondary")
+    return redirect(url_for('nba.index'))
 
 
 @nba_bp.route('/predict', methods=['POST'])
 def predict():
     date = (request.form.get('date') or '').strip()
     args = [date] if date else []
+    target = date or (datetime.date.today() + datetime.timedelta(days=1)).isoformat()
     _kick('predict', 'run_nba_predictions.sh', args,
-          f"Started NBA prediction pipeline ({date or 'tomorrow'}). Check logs.")
+          f"Started NBA prediction pipeline ({date or 'tomorrow'}). Check logs.",
+          target_date=target)
     return redirect(url_for('nba.index'))
 
 
@@ -523,8 +567,10 @@ def predict():
 def verify():
     date = (request.form.get('date') or '').strip()
     args = [date] if date else []
+    target = date or (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
     _kick('verify', 'run_nba_verification.sh', args,
-          f"Started NBA verification ({date or 'yesterday'}).")
+          f"Started NBA verification ({date or 'yesterday'}).",
+          target_date=target)
     return redirect(url_for('nba.index'))
 
 
@@ -532,3 +578,12 @@ def verify():
 def retrain():
     _kick('retrain', 'retrain_nba_pipeline.sh', [], "Started NBA retrain pipeline (full).")
     return redirect(url_for('nba.index'))
+
+
+@nba_bp.route('/archive/<filename>', methods=['POST'])
+def archive(filename):
+    """Soft-delete a predictions CSV or a CLOSED bet slip to history/."""
+    ok, message = archive_file(_out_dir(), filename,
+                               ('predictions_nba_*.csv', 'bets_*.json'))
+    flash(message, 'success' if ok else 'warning')
+    return redirect(request.referrer or url_for('nba.index'))

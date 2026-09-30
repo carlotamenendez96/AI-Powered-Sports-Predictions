@@ -181,6 +181,16 @@
           </button>
         </form>
         {% endif %}
+        {% if slip.status == 'CLOSED' %}
+        <form action="/{{ sport_slug }}/archive/{{ slip.filename }}" method="post" class="m-0"
+              onsubmit="return confirm('Archive this slip? It will be hidden from the list but still counted in the comparison totals.');">
+          <button type="submit" class="btn btn-outline-secondary btn-sm" title="Archive (soft delete)">📁 Archive</button>
+        </form>
+        {% elif not _all_open %}
+        <span class="text-muted small" title="Open slips can't be archived — settlement only looks in the sport's output dir, not history/">
+          🔒 Archive available after settlement
+        </span>
+        {% endif %}
       </div>
       <div class="card-body p-0 collapse" id="bbslip-body-{{ loop.index }}">
         <div class="table-responsive">

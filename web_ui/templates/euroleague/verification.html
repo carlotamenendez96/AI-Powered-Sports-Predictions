@@ -1,0 +1,86 @@
+{% extends "layout.html" %}
+
+{# One day's predictions scored against final results — written by
+   ml_project/euroleague/evaluate_euroleague_predictions.py. #}
+
+{% block content %}
+<div class="container-fluid mt-3">
+
+  {% include "_sport_switcher.html" %}
+
+  {% set n = rows|length %}
+  {% set win_hits = rows|sum(attribute='Winner Correct') %}
+  {% set ou_rows = rows|rejectattr('O/U Correct', 'equalto', '')|list %}
+  {% set ou_hits = ou_rows|sum(attribute='O/U Correct') %}
+
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <div>
+      <h2 class="mb-0">
+        <img src="{{ url_for('static', filename='img/euroleague_logo_only.png') }}"
+             alt="EuroLeague logo" class="sport-icon-lg me-2" style="vertical-align: -6px;">
+        Verification
+      </h2>
+      <div class="text-muted small"><code>{{ filename }}</code> · {{ n }} finished game(s)</div>
+    </div>
+    <a href="{{ url_for('euroleague.index') }}" class="btn btn-outline-secondary btn-sm">← Dashboard</a>
+  </div>
+
+  {% if rows %}
+  <div class="d-flex gap-2 mb-3">
+    <div class="card"><div class="card-body py-2 px-3">
+      <div class="small text-muted text-uppercase">Winner</div>
+      <div class="fs-5 fw-semibold">{{ win_hits }}/{{ n }}
+        <span class="text-muted fs-6">({{ '%.0f'|format(100 * win_hits / n) }}%)</span></div>
+    </div></div>
+    <div class="card"><div class="card-body py-2 px-3">
+      <div class="small text-muted text-uppercase">O/U at main line</div>
+      <div class="fs-5 fw-semibold">{{ ou_hits }}/{{ ou_rows|length }}
+        {% if ou_rows %}<span class="text-muted fs-6">({{ '%.0f'|format(100 * ou_hits / ou_rows|length) }}%)</span>{% endif %}</div>
+    </div></div>
+  </div>
+
+  <div class="card">
+    <div class="table-responsive">
+      <table class="table table-sm table-hover mb-0 align-middle">
+        <thead>
+          <tr>
+            <th>Comp</th>
+            <th>Matchup</th>
+            <th class="text-end">P(home)</th>
+            <th>Pick</th>
+            <th class="text-center">Final</th>
+            <th class="text-center">Winner</th>
+            <th class="text-end">Pred total</th>
+            <th class="text-end">Actual</th>
+            <th class="text-end">Line</th>
+            <th>O/U lean</th>
+            <th class="text-center">O/U</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in rows %}
+          <tr>
+            <td><span class="badge {{ 'bg-warning text-dark' if r.get('competition') == 'U' else 'bg-dark' }}">{{ 'EuroCup' if r.get('competition') == 'U' else 'EuroLg' }}</span></td>
+            <td><strong>{{ r['Home Team'] }}</strong> <span class="text-muted">vs</span> {{ r['Away Team'] }}</td>
+            <td class="text-end">{{ '%.3f'|format(r['Home Win Prob']|float) }}</td>
+            <td><span class="badge {{ 'bg-primary' if r['Predicted Winner'] == 'HOME' else 'bg-secondary' }}">{{ r['Predicted Winner'] }}</span></td>
+            <td class="text-center fw-semibold">{{ r['Final Score'] }}</td>
+            <td class="text-center">{{ '✅' if r['Winner Correct'] in (1, '1') else '❌' }}</td>
+            <td class="text-end">{{ '%.1f'|format(r['Predicted Total']|float) }}</td>
+            <td class="text-end">{{ r['Actual Total'] }}</td>
+            <td class="text-end text-muted">{{ r['Over Line'] }}</td>
+            <td>{{ r['O/U Lean'] }}</td>
+            <td class="text-center">
+              {% if r['O/U Correct'] in (1, '1') %}✅{% elif r['O/U Correct'] in (0, '0') %}❌{% else %}<span class="text-muted">—</span>{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% else %}
+  <p class="text-muted">No finished games in this report.</p>
+  {% endif %}
+</div>
+{% endblock %}

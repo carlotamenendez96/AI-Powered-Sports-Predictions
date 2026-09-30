@@ -32,6 +32,7 @@ import json
 import os
 import subprocess
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 from flask import (
@@ -40,6 +41,7 @@ from flask import (
 )
 
 from betting_backend import EuroleagueBettingBackend, make_bet_id
+from sport_archive import archive_file
 # Shared with predict_euroleague.py so the displayed pick and the staked
 # pick are computed by the same code path.
 from ml_project.euroleague import euroleague_totals as el_totals
@@ -48,6 +50,10 @@ from sports_config import LANES, get_sport_config, lane_bankrolls, update_bankro
 
 euroleague_bp = Blueprint('euroleague', __name__)
 EUROLEAGUE_TASKS = {}   # {'predict'|'verify'|'retrain': Popen} — checked by /status
+# Per-run metadata for the dashboard status bar: {'target_date', 'start_time'}.
+# Kept beside EUROLEAGUE_TASKS (not inside it) so /status's shared Popen-dict
+# loop over NBA + Euroleague keeps one shape.
+EUROLEAGUE_TASK_META = {}
 
 EUROLEAGUE_OUTPUT_DIR = 'output_euroleague'
 
@@ -115,23 +121,21 @@ def _prediction_files(limit: int = 8) -> list:
     return out
 
 
-def _recent_slips(limit: int = 5) -> list:
-    files = sorted(glob.glob(os.path.join(_out_dir(), "bets_*.json")),
-                   key=os.path.getctime, reverse=True)
+def _verification_files(limit: int = 8) -> list:
+    """[{filename, date, count}] newest first, from the prediction-vs-result
+    reports that bin/run_euroleague_verification.sh writes."""
     out = []
-    for f in files[:limit]:
+    for path in sorted(glob.glob(os.path.join(_out_dir(), "verification_euroleague_*.csv")),
+                       key=os.path.getmtime, reverse=True)[:limit]:
+        name = os.path.basename(path)
         try:
-            with open(f) as fh:
-                s = json.load(fh)
-                out.append({
-                    "date": s.get("date"),
-                    "file": os.path.basename(f),
-                    "count": s.get("count"),
-                    "total_stake": s.get("total_stake"),
-                    "status": s.get("status"),
-                })
+            df = pd.read_csv(path)
+            n, hits = len(df), int(df.get('Winner Correct', pd.Series(dtype=int)).sum())
         except Exception:
-            pass
+            n, hits = 0, 0
+        out.append({"filename": name,
+                    "date": name.replace("verification_euroleague_", "").replace(".csv", ""),
+                    "count": n, "hits": hits})
     return out
 
 
@@ -150,7 +154,7 @@ def index():
         pred_file=(os.path.basename(pred_path) if pred_path else None),
         bankrolls=bankrolls,
         total_bankroll=total_bankroll,
-        recent_slips=_recent_slips(),
+        verification_files=_verification_files(),
     )
 
 
@@ -177,27 +181,80 @@ def _kelly(odd: float, prob: float) -> float:
     return max(0.0, ((b * prob - q) / b) * 0.25)
 
 
-def _available_prediction_dates() -> list:
-    """Prediction dates with no bets slip yet — what the slip generator offers.
+# The Euroleague feed's `startime` is Central European time (Panathinaikos'
+# 21:15 Athens tip-off is listed as 20:15), not the machine's local zone.
+_TIPOFF_TZ = ZoneInfo('Europe/Berlin')
 
-    Mirrors football's `_available_prediction_dates`. Unlike football this does
-    not filter to today-or-later: Euroleague slates are ~2x a week, so a
-    yesterday-but-unbet file is still worth showing rather than silently
-    vanishing from the picker.
+
+def _now() -> datetime.datetime:
+    return datetime.datetime.now(_TIPOFF_TZ)
+
+
+def _tipoffs(date_str: str) -> dict:
+    """{gameId: aware tip-off datetime} from fixtures_<date>.json. Games with
+    no parseable time are left out, so callers fall back to the date."""
+    path = os.path.join(_project_root(), 'data_sets', 'Euroleague', f'fixtures_{date_str}.json')
+    try:
+        with open(path) as f:
+            rows = json.load(f) or []
+    except (OSError, ValueError):
+        return {}
+    out = {}
+    for r in rows:
+        try:
+            t = datetime.datetime.strptime(str(r.get('tipoff', '')), '%Y-%m-%d %H:%M')
+        except ValueError:
+            continue
+        out[str(r.get('gameId'))] = t.replace(tzinfo=_TIPOFF_TZ)
+    return out
+
+
+def _has_started(date_str: str, game_id, tipoffs: dict, now: datetime.datetime) -> bool:
+    """True once a game can no longer be bet: past its tip-off when known,
+    otherwise once its date is before today."""
+    t = tipoffs.get(str(game_id))
+    if t is not None:
+        return t <= now
+    return bool(date_str) and date_str < now.date().isoformat()
+
+
+def _available_prediction_dates() -> list:
+    """Prediction dates the slip generator may bet: a predictions file exists,
+    no live slip covers the date yet, and at least one game has not tipped off.
+
+    Mirrors football's `_available_prediction_dates`. A slip counts as live if
+    it holds a non-VOID bet, so a fully cancelled date is re-offered — but only
+    while it still has games to bet; past slates never come back.
     """
-    out = os.path.join(_out_dir(), '')
+    out = _out_dir()
     pred = {os.path.basename(p).replace('predictions_euroleague_', '').replace('.csv', '')
             for p in glob.glob(os.path.join(out, 'predictions_euroleague_*.csv'))}
     bet = set()
-    for p in glob.glob(os.path.join(out, 'bets_*.json')):
+    # Active AND archived slips — an archived slip with real bets still means
+    # the date was bet. Strip the optional `.<ts>` archive-collision suffix.
+    for p in (glob.glob(os.path.join(out, 'bets_*.json'))
+              + glob.glob(os.path.join(out, 'history', 'bets_*.json'))):
+        stem = os.path.basename(p)[len('bets_'):-len('.json')].split('.', 1)[0]
         try:
             data = json.load(open(p))
         except (json.JSONDecodeError, OSError):
+            bet.add(stem)
             continue
         bets = data if isinstance(data, list) else data.get('bets', [])
         if any(str(b.get('status', '')).upper() != 'VOID' for b in bets):
-            bet.add(os.path.basename(p).replace('bets_', '').replace('.json', ''))
-    return sorted(pred - bet, reverse=True)
+            bet.add(stem)
+    today = datetime.date.today().isoformat()
+    now = _now()
+    live = []
+    for d in pred - bet:
+        if d < today:
+            continue
+        tip = _tipoffs(d)
+        # No fixture times on disk → date-level check only (d >= today).
+        if tip and all(t <= now for t in tip.values()):
+            continue
+        live.append(d)
+    return sorted(live, reverse=True)
 
 
 @euroleague_bp.route('/predictions/available')
@@ -225,6 +282,14 @@ def auto_wager():
             return jsonify({'error': f"Predictions file is empty: {os.path.basename(pred_path)}."}), 400
 
         target_date = str(df['Date'].iloc[0]) if 'Date' in df.columns else None
+
+        # Never offer a game that has already tipped off (a cancelled past
+        # slip used to re-open yesterday's slate for betting).
+        tipoffs, now = _tipoffs(target_date), _now()
+        started = df.apply(lambda r: _has_started(target_date, r.get('gameId'), tipoffs, now), axis=1)
+        if started.all():
+            return jsonify({'error': f"All Euroleague games on {target_date} have already tipped off."}), 400
+        df = df[~started]
         odds_by_pair = _load_odds_by_pair(target_date)
 
         config = get_sport_config('euroleague')
@@ -486,6 +551,16 @@ def place_bets():
         if not date_str:
             date_str = data.get('date') or datetime.date.today().strftime('%Y-%m-%d')
 
+        # Server-side guard: the preview may be stale (page left open past
+        # tip-off), so re-check every bet rather than trusting the client.
+        tipoffs, now = _tipoffs(date_str), _now()
+        late = [b.get('match', b.get('match_id', '?')) for b in bets
+                if _has_started(str(b.get('date') or date_str).split(' ')[0],
+                                b.get('match_id'), tipoffs, now)]
+        if late:
+            return jsonify({'error': "These games have already tipped off — regenerate the slip: "
+                                     + ", ".join(sorted(set(late)))}), 400
+
         stake_by_lane = {lane: 0.0 for lane in LANES}
         for b in bets:
             lane = b.get('lane', 'value')
@@ -502,6 +577,20 @@ def place_bets():
                     b.get('selection', ''),
                 )
             b.setdefault('mode', 'virtual')
+
+        # Never overwrite a slip that still holds real bets — the old write
+        # replaced it wholesale, orphaning its stakes from the record.
+        _existing = os.path.join(_out_dir(), f"bets_{date_str}.json")
+        if os.path.exists(_existing):
+            try:
+                with open(_existing) as f:
+                    _prev = json.load(f)
+                _prev_bets = _prev if isinstance(_prev, list) else _prev.get('bets', [])
+            except (OSError, ValueError):
+                _prev_bets = [{}]   # unreadable: be conservative
+            if any(str(b.get('status', '')).upper() != 'VOID' for b in _prev_bets):
+                return jsonify({'error': f"A slip for {date_str} already exists "
+                                         f"(bets_{date_str}.json). Cancel or settle it first."}), 409
 
         current = lane_bankrolls('euroleague')
         for lane, stake in stake_by_lane.items():
@@ -545,7 +634,8 @@ def place_bets():
 # Bin-script task triggers
 # ---------------------------------------------------------------------------
 
-def _kick(task: str, script: str, args: list, success_msg: str) -> None:
+def _kick(task: str, script: str, args: list, success_msg: str,
+          target_date: Optional[str] = None) -> None:
     if EUROLEAGUE_TASKS.get(task) and EUROLEAGUE_TASKS[task].poll() is None:
         flash(f"Euroleague {task} is already running.", "warning")
         return
@@ -558,17 +648,42 @@ def _kick(task: str, script: str, args: list, success_msg: str) -> None:
         proc = subprocess.Popen(['/bin/bash', script_path, *args], cwd=project_root,
                                 stdout=log_f, stderr=subprocess.STDOUT)
         EUROLEAGUE_TASKS[task] = proc
+        EUROLEAGUE_TASK_META[task] = {'target_date': target_date,
+                                      'start_time': datetime.datetime.now()}
         flash(success_msg, "success")
     except Exception as e:
         flash(f"Failed to start Euroleague {task}: {e}", "danger")
+
+
+@euroleague_bp.route('/stop/<task>', methods=['POST'])
+def stop_task(task):
+    proc = EUROLEAGUE_TASKS.get(task)
+    if proc and proc.poll() is None:
+        try:
+            proc.terminate()
+            try:
+                proc.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+            # Drop the handle so /status reports idle rather than a
+            # signal-exit 'error' for a run the user stopped on purpose.
+            EUROLEAGUE_TASKS[task] = None
+            flash(f"Euroleague {task} stopped.", "warning")
+        except Exception as e:
+            flash(f"Error stopping Euroleague {task}: {e}", "danger")
+    else:
+        flash(f"No running Euroleague {task} task found.", "secondary")
+    return redirect(url_for('euroleague.index'))
 
 
 @euroleague_bp.route('/predict', methods=['POST'])
 def predict():
     date = (request.form.get('date') or '').strip()
     args = [date] if date else []
+    target = date or (datetime.date.today() + datetime.timedelta(days=1)).isoformat()
     _kick('predict', 'run_euroleague_predictions.sh', args,
-          f"Started Euroleague prediction pipeline ({date or 'tomorrow'}). Check logs.")
+          f"Started Euroleague prediction pipeline ({date or 'tomorrow'}). Check logs.",
+          target_date=target)
     return redirect(url_for('euroleague.index'))
 
 
@@ -576,8 +691,10 @@ def predict():
 def verify():
     date = (request.form.get('date') or '').strip()
     args = [date] if date else []
+    target = date or (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
     _kick('verify', 'run_euroleague_verification.sh', args,
-          f"Started Euroleague verification ({date or 'yesterday'}).")
+          f"Started Euroleague verification ({date or 'yesterday'}).",
+          target_date=target)
     return redirect(url_for('euroleague.index'))
 
 
@@ -648,16 +765,50 @@ def cancel_slip(date):
 
     # Archive so a cancelled slip stops cluttering the history, mirroring
     # football. Non-fatal: the refund already happened and is what matters.
-    src = os.path.join(_out_dir(), f'bets_{date}.json')
-    try:
-        hist = os.path.join(_out_dir(), 'history')
-        os.makedirs(hist, exist_ok=True)
-        if os.path.exists(src):
-            os.replace(src, os.path.join(hist, f'bets_{date}.json'))
+    # Collision-safe: a plain os.replace here once overwrote an already
+    # archived, SETTLED slip for the same date with this cancelled one.
+    ok_arch, arch_msg = archive_file(_out_dir(), f'bets_{date}.json', ('bets_*.json',))
+    if ok_arch:
         flash(f'Slip {date} cancelled and archived. {message}', 'success')
-    except OSError as e:
-        flash(f'Slip {date} cancelled ({message}), but archiving failed: {e}', 'warning')
+    else:
+        flash(f'Slip {date} cancelled ({message}), but archiving failed: {arch_msg}', 'warning')
     return redirect(request.referrer or url_for('euroleague.index'))
+
+
+@euroleague_bp.route('/archive/<filename>', methods=['POST'])
+def archive(filename):
+    """Soft-delete a predictions CSV or a CLOSED bet slip to history/."""
+    ok, message = archive_file(_out_dir(), filename,
+                               ('predictions_euroleague_*.csv', 'verification_euroleague_*.csv',
+                                'bets_*.json'))
+    flash(message, 'success' if ok else 'warning')
+    return redirect(request.referrer or url_for('euroleague.index'))
+
+
+_ARCHIVE_ALL_PATTERNS = {
+    'predictions':   'predictions_euroleague_*.csv',
+    'verifications': 'verification_euroleague_*.csv',
+}
+
+
+@euroleague_bp.route('/archive_all/<kind>', methods=['POST'])
+def archive_all(kind):
+    """Archive every predictions or verification report (football parity)."""
+    pattern = _ARCHIVE_ALL_PATTERNS.get(kind)
+    if not pattern:
+        flash(f'Unknown archive kind: {kind}', 'danger')
+        return redirect(url_for('euroleague.index'))
+    done, failed = 0, []
+    for path in glob.glob(os.path.join(_out_dir(), pattern)):
+        ok, msg = archive_file(_out_dir(), os.path.basename(path), (pattern,))
+        if ok:
+            done += 1
+        else:
+            failed.append(msg)
+    flash(f'Archived {done} {kind} file(s) to history/.'
+          + (f' {len(failed)} failed: ' + '; '.join(failed) if failed else ''),
+          'success' if not failed else 'warning')
+    return redirect(url_for('euroleague.index'))
 
 
 @euroleague_bp.route('/view/<filename>')
@@ -666,10 +817,14 @@ def view_file(filename):
     inlining the table (football does the same via /football/view/<f>)."""
     safe = os.path.basename(filename)                      # no path traversal
     path = os.path.join(_out_dir(), safe)
-    if not safe.startswith('predictions_euroleague_') or not os.path.exists(path):
+    is_verif = safe.startswith('verification_euroleague_')
+    if not (safe.startswith('predictions_euroleague_') or is_verif) or not os.path.exists(path):
         flash('File not found.', 'danger')
         return redirect(url_for('euroleague.index'))
     df = _load_predictions(path).fillna('')
+    if is_verif:
+        return render_template('euroleague/verification.html',
+                               filename=safe, rows=df.to_dict(orient='records'))
     return render_template('euroleague/view.html',
                            filename=safe,
                            rows=df.to_dict(orient='records'))

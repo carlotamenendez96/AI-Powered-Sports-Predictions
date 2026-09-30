@@ -66,9 +66,9 @@ football_bp = Blueprint('football', __name__)
 
 
 # Register Blueprints
-from nba.routes import nba_bp, NBA_TASKS  # NBA reactivated 2026-05-28 (Phase 3)
+from nba.routes import nba_bp, NBA_TASKS, NBA_TASK_META  # NBA reactivated 2026-05-28 (Phase 3)
 app.register_blueprint(nba_bp, url_prefix='/nba')
-from euroleague.routes import euroleague_bp, EUROLEAGUE_TASKS  # Euroleague Phase 3 (2026-05-29)
+from euroleague.routes import euroleague_bp, EUROLEAGUE_TASKS, EUROLEAGUE_TASK_META  # Euroleague Phase 3 (2026-05-29)
 app.register_blueprint(euroleague_bp, url_prefix='/euroleague')
 
 # Football blueprint registration happens at the bottom of this file,
@@ -762,6 +762,8 @@ def get_status():
                 status[task_name] = {'state': 'running'}
                 if task_info.get('target_date'):
                     status[task_name]['target_date'] = task_info['target_date']
+                if task_info.get('start_time'):
+                    status[task_name]['started'] = task_info['start_time'].isoformat()
             elif poll == 0:
                 status[task_name] = {'state': 'completed'}
             else:
@@ -810,7 +812,10 @@ def get_status():
             status[task_name] = {'state': 'idle'}
             
     # Check NBA + Euroleague Tasks (same Popen-dict shape, slug-prefixed keys).
-    for prefix, task_dict in (("nba", NBA_TASKS), ("euroleague", EUROLEAGUE_TASKS)):
+    # NBA + Euroleague also carry run metadata (target_date / run_id) and a log
+    # tail on error, so its dashboard can show football's status bar.
+    for prefix, task_dict, meta_dict in (("nba", NBA_TASKS, NBA_TASK_META),
+                                         ("euroleague", EUROLEAGUE_TASKS, EUROLEAGUE_TASK_META)):
         for task_name, proc in task_dict.items():
             key = f"{prefix}_{task_name}"
             if proc:
@@ -820,7 +825,22 @@ def get_status():
                 elif poll == 0:
                     status[key] = {'state': 'completed'}
                 else:
-                    status[key] = {'state': 'error'}
+                    error_msg = 'Unknown error'
+                    log_file = os.path.join(LOG_DIR, f"{key}.log")
+                    if os.path.exists(log_file):
+                        try:
+                            lines = subprocess.check_output(
+                                ['tail', '-n', '3', log_file]).decode('utf-8').splitlines()
+                            error_msg = "\n".join(lines).strip() or error_msg
+                        except Exception:
+                            pass
+                    status[key] = {'state': 'error', 'msg': error_msg}
+                meta = meta_dict.get(task_name) or {}
+                if meta.get('target_date'):
+                    status[key]['target_date'] = meta['target_date']
+                if meta.get('start_time'):
+                    status[key]['run_id'] = meta['start_time'].isoformat()
+                    status[key]['started'] = status[key]['run_id']
             else:
                 status[key] = {'state': 'idle'}
 
@@ -3029,6 +3049,155 @@ def landing():
         if bets_dir:
             sport_summaries[sport['slug']] = compute_sport_summary(bets_dir)['totals']
     return render_template('landing.html', sport_summaries=sport_summaries)
+
+
+# --- Actions page: every sport's pipelines in one place --------------------
+# Each form posts to the sport's EXISTING trigger route (no duplicated launch
+# logic) with a hidden `next=/actions`; `_honour_next` below rewrites that
+# route's redirect so the user lands back here, with its flash messages.
+#
+# `status` is the /status key, `date` the default the script uses when the
+# field is left blank ('tomorrow' / 'yesterday'; None = takes no date),
+# `log` the file under logs/ the route writes.
+PIPELINE_ACTIONS = {
+    'football': [
+        {'label': 'Predict', 'icon': '🔮', 'url': '/football/predict', 'status': 'predict',
+         'stop': '/stop/predict', 'date': 'tomorrow', 'force': True, 'log': 'predict.log',
+         'hint': 'Scrape the slate, refresh stale inputs, predict.'},
+        {'label': 'Verify', 'icon': '✅', 'url': '/football/verify', 'status': 'verify',
+         'stop': '/stop/verify', 'date': 'yesterday', 'log': 'verify.log',
+         'hint': 'Scrape results, settle bet slips.'},
+        {'label': 'Update results data', 'icon': '📥', 'url': '/football/update_data', 'status': 'update',
+         'stop': '/stop/update', 'date': None, 'log': 'update_data.log',
+         'hint': 'Download MatchHistory CSVs from football-data.co.uk.'},
+        {'label': 'Update standings', 'icon': '📊', 'url': '/football/update_leagues', 'status': 'leagues',
+         'stop': '/stop/leagues', 'date': None, 'log': 'leagues.log',
+         'hint': 'Crawl league tables + form (~17 min).'},
+        {'label': 'Retrain', 'icon': '🔄', 'url': '/football/retrain_model', 'status': 'retrain',
+         'stop': '/stop/retrain', 'date': None, 'log': 'retrain.log', 'confirm': True,
+         'hint': 'Full pipeline: data → standings → train → calibrate (~20–30 min).'},
+    ],
+    'euroleague': [
+        {'label': 'Predict', 'icon': '🔮', 'url': '/euroleague/predict', 'status': 'euroleague_predict',
+         'stop': '/euroleague/stop/predict', 'date': 'tomorrow', 'log': 'euroleague_predict.log',
+         'hint': 'Fixtures + odds, predict.'},
+        {'label': 'Verify', 'icon': '✅', 'url': '/euroleague/verify', 'status': 'euroleague_verify',
+         'stop': '/euroleague/stop/verify', 'date': 'yesterday', 'log': 'euroleague_verify.log',
+         'hint': 'Results, settle bet slips.'},
+        {'label': 'Retrain', 'icon': '🔄', 'url': '/euroleague/retrain', 'status': 'euroleague_retrain',
+         'stop': '/euroleague/stop/retrain', 'date': None, 'log': 'euroleague_retrain.log', 'confirm': True,
+         'hint': 'Full retrain pipeline.'},
+    ],
+    'nba': [
+        {'label': 'Predict', 'icon': '🔮', 'url': '/nba/predict', 'status': 'nba_predict',
+         'stop': '/nba/stop/predict', 'date': 'tomorrow', 'log': 'nba_predict.log',
+         'hint': 'Fixtures + ESPN odds, predict.'},
+        {'label': 'Verify', 'icon': '✅', 'url': '/nba/verify', 'status': 'nba_verify',
+         'stop': '/nba/stop/verify', 'date': 'yesterday', 'log': 'nba_verify.log',
+         'hint': 'Results, settle bet slips.'},
+        {'label': 'Retrain', 'icon': '🔄', 'url': '/nba/retrain', 'status': 'nba_retrain',
+         'stop': '/nba/stop/retrain', 'date': None, 'log': 'nba_retrain.log', 'confirm': True,
+         'hint': 'Full retrain pipeline.'},
+    ],
+}
+
+
+@app.after_request
+def _honour_next(response):
+    """Send a POST back to a local `next` page instead of the route's own
+    hard-coded dashboard redirect. Only same-site paths are honoured."""
+    if request.method == 'POST' and response.status_code in (301, 302, 303):
+        nxt = request.form.get('next', '')
+        if nxt.startswith('/') and not nxt.startswith('//'):
+            response.headers['Location'] = nxt
+    return response
+
+
+# Where each sport leaves its per-date artifacts, for the Actions page's
+# day-status grid. `run` is the file a prediction run writes even when it finds
+# nothing to predict (the scrape / fixtures step), so "ran but empty" can be
+# told apart from "never ran". Paths are relative to PROJECT_ROOT.
+_DAY_STATUS_PATHS = {
+    'football':   {'dir': 'output', 'pred': 'predictions_{d}.csv',
+                   'run': 'output/matches_{d}.json'},
+    'euroleague': {'dir': 'output_euroleague', 'pred': 'predictions_euroleague_{d}.csv',
+                   'run': 'data_sets/Euroleague/fixtures_{d}.json'},
+    'nba':        {'dir': 'output_basketball', 'pred': 'predictions_nba_{d}.csv',
+                   'run': 'data_sets/NBA/fixtures_{d}.json'},
+}
+
+
+def _dated_files(directory, pattern):
+    """Active + archived (history/) copies of a per-date file. Archiving only
+    hides a file from the lists; for "did this happen" it still counts. Old
+    archive collisions carry a `.<ts>` suffix before the extension."""
+    base, ext = os.path.splitext(pattern)
+    out = []
+    for d in (directory, os.path.join(directory, 'history')):
+        out += glob.glob(os.path.join(d, pattern))
+        out += glob.glob(os.path.join(d, f'{base}.*{ext}'))
+    return out
+
+
+def _day_status(slug, date_str):
+    """One cell of the grid: {'code': 'B'|'P'|'p'|'', 'title': tooltip}.
+    B = a slip with at least one non-VOID bet; P = predictions with rows;
+    p = a prediction run happened but produced no rows; '' = nothing."""
+    cfg = _DAY_STATUS_PATHS.get(slug)
+    if not cfg:
+        return {'code': '', 'title': ''}
+    out_dir = os.path.join(PROJECT_ROOT, cfg['dir'])
+
+    n_bets = 0
+    for path in _dated_files(out_dir, f'bets_{date_str}.json'):
+        try:
+            with open(path) as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            continue
+        bets = data if isinstance(data, list) else data.get('bets', [])
+        n_bets += sum(1 for b in bets if str(b.get('status', '')).upper() != 'VOID')
+
+    n_pred, pred_file = 0, False
+    for path in _dated_files(out_dir, cfg['pred'].format(d=date_str)):
+        pred_file = True
+        try:
+            with open(path) as f:
+                n_pred = max(n_pred, sum(1 for line in f if line.strip()) - 1)
+        except OSError:
+            pass
+    ran = pred_file or os.path.exists(os.path.join(PROJECT_ROOT, cfg['run'].format(d=date_str)))
+
+    if n_bets:
+        return {'code': 'B', 'title': f'{n_bets} bet(s) placed · {n_pred} prediction(s)'}
+    if n_pred > 0:
+        return {'code': 'P', 'title': f'{n_pred} prediction(s), no bets yet'}
+    if ran:
+        return {'code': 'p', 'title': 'Prediction ran but produced no predictions'}
+    return {'code': '', 'title': 'Nothing run yet'}
+
+
+def _day_status_grid(days=5):
+    today = datetime.date.today()
+    sports = [s for s in SPORTS if s.get('active')]
+    rows = []
+    for i in range(days):
+        d = today + datetime.timedelta(days=i)
+        ds = d.isoformat()
+        rows.append({'date': ds,
+                     'label': 'Today' if i == 0 else ('Tomorrow' if i == 1 else d.strftime('%a')),
+                     'short': d.strftime('%d/%m'),
+                     'cells': {s['slug']: _day_status(s['slug'], ds) for s in sports}})
+    return sports, rows
+
+
+@app.route('/actions')
+def actions():
+    sports = [dict(s, actions=PIPELINE_ACTIONS.get(s['slug'], []))
+              for s in SPORTS if s.get('active')]
+    grid_sports, grid_rows = _day_status_grid()
+    return render_template('actions.html', action_sports=sports,
+                           grid_sports=grid_sports, grid_rows=grid_rows)
 
 
 @app.route('/betting')
