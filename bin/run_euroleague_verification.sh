@@ -68,6 +68,14 @@ else
     echo "[!] Settlement failed (non-fatal) — results are appended; re-run to settle."
 fi
 
+# Prediction-vs-result report (verification_euroleague_<date>.csv) — what the
+# dashboard's Verification Reports column lists. Non-fatal: the corpus append
+# and settlement above are what matter; the report can be regenerated.
+echo ""
+echo "[*] Writing verification report ..."
+python3 ml_project/euroleague/evaluate_euroleague_predictions.py --date "$TARGET_DATE" \
+    || echo "[!] Verification report failed (non-fatal)."
+
 echo ""
 echo "========================================"
 echo "    Verification Finished               "
