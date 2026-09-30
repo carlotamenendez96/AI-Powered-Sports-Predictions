@@ -7,10 +7,16 @@ source venv/bin/activate
 
 STANDINGS_DIR="data_sets/standings"
 
+# One crawl at a time (see bin/_lock.sh): concurrent crawls slow each other
+# down and race on the same output files. run_predictions.sh step 3 treats a
+# non-zero exit here as "standings not refreshed" and carries on.
+source bin/_lock.sh
+acquire_lock standings || exit $EXIT_LOCKED
+
 # Marker for the freshness check below. Created BEFORE the crawl so any file
 # the pipeline writes is strictly newer than it.
 MARKER="$(mktemp -t standings_run_marker)"
-trap 'rm -f "$MARKER"' EXIT
+trap 'rm -f "$MARKER"; release_lock' EXIT
 
 # Run the standings spider.
 # No -O because the pipeline handles the files.
@@ -42,7 +48,23 @@ mkdir -p logs
 
 scrapy crawl standings -L INFO -s CLOSESPIDER_TIMEOUT="$CRAWL_TIMEOUT_S" > "$CRAWL_LOG" 2>&1 &
 CRAWL_PID=$!
-( sleep $((CRAWL_TIMEOUT_S + 300)); kill -9 "$CRAWL_PID" 2>/dev/null ) &
+# Deadline on the WALL CLOCK, polled — not one long `sleep`. macOS suspends
+# sleep(1)'s countdown while the machine sleeps, so on 2026-09-30 a
+# `sleep 3900` watchdog was still sleeping after 4h and a crawl wedged in its
+# graceful close ran until killed by hand. date +%s keeps counting through
+# system sleep, so the kill fires on the first poll after wake-up.
+DEADLINE=$(( $(date +%s) + CRAWL_TIMEOUT_S + 300 ))
+(
+    while kill -0 "$CRAWL_PID" 2>/dev/null; do
+        if [ "$(date +%s)" -ge "$DEADLINE" ]; then
+            echo "[-] Watchdog: crawl passed its deadline — SIGKILL." >&2
+            pkill -9 -P "$CRAWL_PID" 2>/dev/null   # Playwright driver + Chromium
+            kill -9 "$CRAWL_PID" 2>/dev/null
+            break
+        fi
+        sleep 30
+    done
+) &
 WATCHDOG_PID=$!
 
 wait "$CRAWL_PID"

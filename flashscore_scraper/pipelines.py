@@ -63,9 +63,36 @@ class StandingsPipeline:
 
     def close_spider(self, spider):
         if spider.name != "standings": return
-        
+
+        # Merge per (country, league) instead of overwriting. close_spider also
+        # runs on a PARTIAL crawl — CLOSESPIDER_TIMEOUT, or a SIGTERM, which
+        # Scrapy handles as a graceful shutdown — and a blind overwrite then
+        # replaced every league's table with the few it had reached. Measured
+        # 2026-09-30: killing duplicate crawls left standings_overall holding 2
+        # leagues instead of the full 40-league crawl from minutes earlier, and
+        # because the files were now brand new, run_predictions.sh's 12h age
+        # gate skipped the refresh and served neutral strength (MLS: "No
+        # Standings Data"). Now a league scraped this run replaces its own rows;
+        # every other league keeps its last good rows.
         for key, rows in self.data_store.items():
+            if not rows:
+                spider.logger.info(f"No rows for {key} this run — keeping existing file")
+                continue
             filepath = os.path.join(self.base_dir, f"{key}.json")
-            with open(filepath, 'w') as f:
-                json.dump(rows, f, indent=2)
-            spider.logger.info(f"Saved {len(rows)} rows to {filepath}")
+            scraped = {(r.get('country'), r.get('league')) for r in rows}
+            kept = []
+            try:
+                with open(filepath) as f:
+                    existing = json.load(f)
+                if isinstance(existing, list):
+                    kept = [r for r in existing
+                            if (r.get('country'), r.get('league')) not in scraped]
+            except (OSError, ValueError):
+                pass
+            # Atomic write: a kill mid-dump must not leave a truncated file.
+            tmp = filepath + '.tmp'
+            with open(tmp, 'w') as f:
+                json.dump(kept + rows, f, indent=2)
+            os.replace(tmp, filepath)
+            spider.logger.info(f"Saved {len(rows)} rows ({len(scraped)} leagues) to {filepath}, "
+                               f"kept {len(kept)} rows from other leagues")

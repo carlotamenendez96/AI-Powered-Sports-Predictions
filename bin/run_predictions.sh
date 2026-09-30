@@ -3,6 +3,10 @@
 # Change directory to project root (one level up from bin/)
 cd "$(dirname "$0")/.." || exit
 
+# One prediction run at a time — see bin/_lock.sh. Exits EXIT_LOCKED (4).
+source bin/_lock.sh
+acquire_lock predict || exit $EXIT_LOCKED
+
 # Configuration
 VENV_PATH="venv/bin/activate"
 # Check for --force flag and Date Arg
