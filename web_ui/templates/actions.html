@@ -33,11 +33,13 @@
             </td>
             {% for r in grid_rows %}
             {% set c = r.cells[s.slug] %}
-            <td title="{{ c.title }}">
+            <td title="{{ c.title }}{% if c.url %} — click to open{% endif %}">
+              {% if c.url %}<a href="{{ c.url }}" class="text-decoration-none day-link">{% endif %}
               {% if c.code == 'B' %}<span class="badge bg-success day-badge">B</span>
               {% elif c.code == 'P' %}<span class="badge bg-success bg-opacity-50 day-badge">P</span>
               {% elif c.code == 'p' %}<span class="badge bg-secondary day-badge">P</span>
               {% endif %}
+              {% if c.url %}</a>{% endif %}
             </td>
             {% endfor %}
           </tr>
@@ -53,7 +55,11 @@
       </div>
     </div>
   </div>
-  <style>.day-grid .day-badge { min-width: 1.8rem; font-size: .85rem; }</style>
+  <style>
+    .day-grid .day-badge { min-width: 1.8rem; font-size: .85rem; }
+    .day-grid .day-link .day-badge { cursor: pointer; }
+    .day-grid .day-link:hover .day-badge { filter: brightness(1.2); text-decoration: underline; }
+  </style>
 
   <div class="row g-3">
     {% for sport in action_sports %}

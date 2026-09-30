@@ -3122,11 +3122,12 @@ def _honour_next(response):
 # told apart from "never ran". Paths are relative to PROJECT_ROOT.
 _DAY_STATUS_PATHS = {
     'football':   {'dir': 'output', 'pred': 'predictions_{d}.csv',
-                   'run': 'output/matches_{d}.json'},
+                   'run': 'output/matches_{d}.json', 'view': '/football/view/{f}'},
     'euroleague': {'dir': 'output_euroleague', 'pred': 'predictions_euroleague_{d}.csv',
-                   'run': 'data_sets/Euroleague/fixtures_{d}.json'},
+                   'run': 'data_sets/Euroleague/fixtures_{d}.json', 'view': '/euroleague/view/{f}'},
+    # NBA has no predictions view page yet, so its P badges stay unlinked.
     'nba':        {'dir': 'output_basketball', 'pred': 'predictions_nba_{d}.csv',
-                   'run': 'data_sets/NBA/fixtures_{d}.json'},
+                   'run': 'data_sets/NBA/fixtures_{d}.json', 'view': None},
 }
 
 
@@ -3171,10 +3172,19 @@ def _day_status(slug, date_str):
             pass
     ran = pred_file or os.path.exists(os.path.join(PROJECT_ROOT, cfg['run'].format(d=date_str)))
 
+    # Links only to ACTIVE files: the betting page lists active slips and the
+    # view routes read only the output dir, so an archived target would 404.
+    pred_name = cfg['pred'].format(d=date_str)
+    pred_url = (cfg['view'].format(f=pred_name)
+                if cfg['view'] and os.path.exists(os.path.join(out_dir, pred_name)) else None)
+    slip_url = (f'/betting?tab={slug}#slip-{slug}-{date_str}'
+                if os.path.exists(os.path.join(out_dir, f'bets_{date_str}.json')) else None)
+
     if n_bets:
-        return {'code': 'B', 'title': f'{n_bets} bet(s) placed · {n_pred} prediction(s)'}
+        return {'code': 'B', 'title': f'{n_bets} bet(s) placed · {n_pred} prediction(s)',
+                'url': slip_url}
     if n_pred > 0:
-        return {'code': 'P', 'title': f'{n_pred} prediction(s), no bets yet'}
+        return {'code': 'P', 'title': f'{n_pred} prediction(s), no bets yet', 'url': pred_url}
     if ran:
         return {'code': 'p', 'title': 'Prediction ran but produced no predictions'}
     return {'code': '', 'title': 'Nothing run yet'}

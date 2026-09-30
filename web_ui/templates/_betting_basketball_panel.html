@@ -136,7 +136,8 @@
     <h3 class="mt-4 mb-3 border-bottom pb-2">📜 Betting History</h3>
     {% if history %}
     {% for slip in history %}
-    <div class="card mb-3 border-{{ 'success' if slip.status == 'CLOSED' and slip.pnl > 0 else ('danger' if slip.status == 'CLOSED' and slip.pnl < 0 else 'secondary') }}">
+    {# id = deep-link target from the Actions page day grid (B badge). #}
+    <div id="slip-{{ sport_slug }}-{{ slip.date }}" class="slip-card card mb-3 border-{{ 'success' if slip.status == 'CLOSED' and slip.pnl > 0 else ('danger' if slip.status == 'CLOSED' and slip.pnl < 0 else 'secondary') }}">
       <div class="card-header d-flex justify-content-between align-items-center">
         <div class="slip-toggle d-flex align-items-center gap-2 collapsed"
              role="button" style="cursor: pointer;"
