@@ -14,24 +14,24 @@
       <table class="table table-sm table-bordered text-center align-middle mb-1 day-grid">
         <thead>
           <tr>
-            <th class="text-start" style="width: 9rem;">Day</th>
-            {% for s in grid_sports %}
-            <th>
-              <a href="/{{ s.slug }}/" class="text-decoration-none text-reset">
+            <th class="text-start" style="width: 10rem;">Sport</th>
+            {% for r in grid_rows %}
+            <th><strong>{{ r.label }}</strong> <span class="text-muted small fw-normal">{{ r.short }}</span></th>
+            {% endfor %}
+          </tr>
+        </thead>
+        <tbody>
+          {% for s in grid_sports %}
+          <tr>
+            <td class="text-start">
+              <a href="/{{ s.slug }}/" class="text-decoration-none text-reset fw-semibold">
                 {% if s.icon_img %}
                   <img src="{{ url_for('static', filename=s.icon_img) }}" alt="" style="height: 18px; vertical-align: -3px;">
                 {% else %}{{ s.icon }}{% endif %}
                 {{ s.label }}
               </a>
-            </th>
-            {% endfor %}
-          </tr>
-        </thead>
-        <tbody>
-          {% for r in grid_rows %}
-          <tr>
-            <td class="text-start"><strong>{{ r.label }}</strong> <span class="text-muted small">{{ r.short }}</span></td>
-            {% for s in grid_sports %}
+            </td>
+            {% for r in grid_rows %}
             {% set c = r.cells[s.slug] %}
             <td title="{{ c.title }}">
               {% if c.code == 'B' %}<span class="badge bg-success day-badge">B</span>
