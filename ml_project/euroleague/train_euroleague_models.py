@@ -6,8 +6,12 @@ U=1) — the Phase-0 decision (cf. football's one-model-across-leagues with
 ``league_cat``). Reports a per-competition CV breakdown so we can see whether
 the combined model under-performs on either competition (the trigger to split).
 
-* **Winner** — ``XGBClassifier``, target ``home_win``.
-* **Total**  — ``XGBRegressor``, target ``total_points``.
+* **Winner** — target ``home_win``.
+* **Total**  — target ``total_points``.
+
+The estimator for each head comes from ``euroleague_models`` (logistic / Ridge
+since 2026-09-30 — see that module for the measurement; ``EUROLEAGUE_MODEL_FAMILY
+=xgb`` restores XGBoost).
 
 5-fold TimeSeriesSplit CV, then a final fit on (95% train / 5% tail). Models
 pickled to ``models/euroleague/{winner,total}_model.pkl``; feature manifests to
@@ -25,7 +29,8 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import accuracy_score, brier_score_loss, mean_absolute_error, r2_score
 from sklearn.model_selection import TimeSeriesSplit
-from xgboost import XGBClassifier, XGBRegressor
+
+from euroleague_models import FAMILY, build_total, build_winner, describe
 
 _REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DATA_PATH = os.path.join(_REPO, "data_sets", "Euroleague", "training_data.csv")
@@ -76,7 +81,7 @@ def _per_competition(df, X, y, model_factory, metric_fn, label):
     oof = np.full(len(df), np.nan)
     for tr, te in tscv.split(X):
         m = model_factory()
-        m.fit(X.iloc[tr], y.iloc[tr], verbose=False)
+        m.fit(X.iloc[tr], y.iloc[tr])
         if hasattr(m, "predict_proba"):
             oof[te] = m.predict_proba(X.iloc[te])[:, 1]
         else:
@@ -115,28 +120,28 @@ def train() -> int:
     tscv = TimeSeriesSplit(n_splits=5)
 
     # ---- Winner -------------------------------------------------------
-    print("\n🏆 winner (XGBClassifier)")
+    print(f"\n🏆 winner ({FAMILY})")
     params_w = load_params(WINNER_PARAMS, {
         "n_estimators": 200, "max_depth": 5, "learning_rate": 0.05,
         "eval_metric": "logloss", "random_state": 42})
     accs, briers = [], []
     for fold, (tr, te) in enumerate(tscv.split(X), 1):
-        clf = XGBClassifier(**params_w)
-        clf.fit(X.iloc[tr], y_win.iloc[tr], verbose=False)
+        clf = build_winner(params_w)
+        clf.fit(X.iloc[tr], y_win.iloc[tr])
         proba = clf.predict_proba(X.iloc[te])[:, 1]
         accs.append(accuracy_score(y_win.iloc[te], (proba >= 0.5).astype(int)))
         briers.append(brier_score_loss(y_win.iloc[te], proba))
         print(f"  fold {fold}: acc={accs[-1]:.4f}  brier={briers[-1]:.4f}  (n_test={len(te)})")
     print(f"  TS-CV mean: acc={np.mean(accs):.4f}  brier={np.mean(briers):.4f}")
-    _per_competition(df, X, y_win, lambda: XGBClassifier(**params_w),
+    _per_competition(df, X, y_win, lambda: build_winner(params_w),
                      lambda yt, yp: f"acc={accuracy_score(yt,(yp>=0.5).astype(int)):.4f} brier={brier_score_loss(yt,yp):.4f}",
                      "winner")
 
-    split = int(len(df) * 0.95)
-    X_tr, X_va = X.iloc[:split], X.iloc[split:]
-    final_w = XGBClassifier(**params_w)
-    final_w.fit(X_tr, y_win.iloc[:split], eval_set=[(X_va, y_win.iloc[split:])], verbose=False)
-    top = sorted(zip(features, final_w.feature_importances_), key=lambda x: -x[1])[:8]
+    # Final fit on ALL rows. The old 95/5 split existed only to feed XGBoost an
+    # eval_set it never early-stopped on; it just discarded the newest 5%.
+    final_w = build_winner(params_w)
+    final_w.fit(X, y_win)
+    top = describe(final_w, features)[:8]
     print("  top predictors:")
     for name, imp in top:
         print(f"    {imp:.4f}  {name}")
@@ -147,23 +152,23 @@ def train() -> int:
     print(f"  → {WINNER_MODEL}")
 
     # ---- Total --------------------------------------------------------
-    print("\n🔢 total (XGBRegressor)")
+    print(f"\n🔢 total ({FAMILY})")
     params_t = load_params(TOTAL_PARAMS, {
         "n_estimators": 200, "max_depth": 5, "learning_rate": 0.05, "random_state": 42})
     maes, r2s = [], []
     for fold, (tr, te) in enumerate(tscv.split(X), 1):
-        reg = XGBRegressor(**params_t)
-        reg.fit(X.iloc[tr], y_total.iloc[tr], verbose=False)
+        reg = build_total(params_t)
+        reg.fit(X.iloc[tr], y_total.iloc[tr])
         pred = reg.predict(X.iloc[te])
         maes.append(mean_absolute_error(y_total.iloc[te], pred))
         r2s.append(r2_score(y_total.iloc[te], pred))
         print(f"  fold {fold}: MAE={maes[-1]:.2f}  R²={r2s[-1]:.3f}  (n_test={len(te)})")
     print(f"  TS-CV mean: MAE={np.mean(maes):.2f}  R²={np.mean(r2s):.3f}")
-    _per_competition(df, X, y_total, lambda: XGBRegressor(**params_t),
+    _per_competition(df, X, y_total, lambda: build_total(params_t),
                      lambda yt, yp: f"MAE={mean_absolute_error(yt,yp):.2f}", "total")
 
-    final_t = XGBRegressor(**params_t)
-    final_t.fit(X_tr, y_total.iloc[:split], eval_set=[(X_va, y_total.iloc[split:])], verbose=False)
+    final_t = build_total(params_t)
+    final_t.fit(X, y_total)
     with open(TOTAL_MODEL, "wb") as f:
         pickle.dump(final_t, f)
     with open(TOTAL_FEATURES, "w") as f:

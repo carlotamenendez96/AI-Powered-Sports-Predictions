@@ -25,7 +25,6 @@ import pandas as pd
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import brier_score_loss
 from sklearn.model_selection import TimeSeriesSplit
-from xgboost import XGBClassifier, XGBRegressor
 
 _REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DATA_PATH = os.path.join(_REPO, "data_sets", "Euroleague", "training_data.csv")
@@ -106,6 +105,8 @@ def _total_overunder_stats(actual, oof_pred):
 
 def fit_calibration(data_path: str = DATA_PATH, out_path: str = OUT_PATH) -> dict:
     from train_euroleague_models import feature_list, load_params, WINNER_PARAMS, TOTAL_PARAMS
+    # Same builders as training, so Platt is fit on OOF output of the SERVED family.
+    from euroleague_models import build_total, build_winner
 
     if not os.path.exists(data_path):
         raise FileNotFoundError(data_path)
@@ -133,11 +134,11 @@ def fit_calibration(data_path: str = DATA_PATH, out_path: str = OUT_PATH) -> dic
     oof_p = np.full(len(df), np.nan)
     oof_total = np.full(len(df), np.nan)
     for fold, (tr, te) in enumerate(TimeSeriesSplit(n_splits=5).split(X), 1):
-        clf = XGBClassifier(**params)
-        clf.fit(X.iloc[tr], y[tr], verbose=False)
+        clf = build_winner(params)
+        clf.fit(X.iloc[tr], y[tr])
         oof_p[te] = clf.predict_proba(X.iloc[te])[:, 1]
-        reg = XGBRegressor(**params_t)
-        reg.fit(X.iloc[tr], y_total[tr], verbose=False)
+        reg = build_total(params_t)
+        reg.fit(X.iloc[tr], y_total[tr])
         oof_total[te] = reg.predict(X.iloc[te])
         print(f"    fold {fold}: n_test={len(te)}")
     mask = ~np.isnan(oof_p)
