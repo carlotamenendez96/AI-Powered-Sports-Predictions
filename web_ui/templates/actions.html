@@ -16,7 +16,7 @@
           <tr>
             <th class="text-start" style="width: 10rem;">Sport</th>
             {% for r in grid_rows %}
-            <th><strong>{{ r.label }}</strong> <span class="text-muted small fw-normal">{{ r.short }}</span></th>
+            <th{% if r.today %} class="text-primary"{% endif %}><strong>{{ r.label }}</strong></th>
             {% endfor %}
           </tr>
         </thead>
@@ -40,6 +40,7 @@
               {% elif c.code == 'p' %}<span class="badge bg-secondary day-badge">P</span>
               {% endif %}
               {% if c.url %}</a>{% endif %}
+              {% if c.verified %}<span class="badge bg-warning text-dark day-badge">V</span>{% endif %}
             </td>
             {% endfor %}
           </tr>
@@ -51,7 +52,8 @@
         <span class="badge bg-success">B</span> bets placed ·
         <span class="badge bg-success bg-opacity-50">P</span> predictions, no bets ·
         <span class="badge bg-secondary">P</span> prediction ran, nothing to predict ·
-        blank = nothing run. Hover a cell for counts.
+        <span class="badge bg-warning text-dark">V</span> verified ·
+        blank = nothing run. Past days stay until football and EuroLeague are verified. Hover a cell for counts.
       </div>
     </div>
   </div>

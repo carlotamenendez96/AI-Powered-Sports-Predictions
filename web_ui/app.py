@@ -3122,12 +3122,15 @@ def _honour_next(response):
 # told apart from "never ran". Paths are relative to PROJECT_ROOT.
 _DAY_STATUS_PATHS = {
     'football':   {'dir': 'output', 'pred': 'predictions_{d}.csv',
-                   'run': 'output/matches_{d}.json', 'view': '/football/view/{f}'},
+                   'run': 'output/matches_{d}.json', 'view': '/football/view/{f}',
+                   'verif': 'verification_{d}.csv'},
     'euroleague': {'dir': 'output_euroleague', 'pred': 'predictions_euroleague_{d}.csv',
-                   'run': 'data_sets/Euroleague/fixtures_{d}.json', 'view': '/euroleague/view/{f}'},
+                   'run': 'data_sets/Euroleague/fixtures_{d}.json', 'view': '/euroleague/view/{f}',
+                   'verif': 'verification_euroleague_{d}.csv'},
     # NBA has no predictions view page yet, so its P badges stay unlinked.
     'nba':        {'dir': 'output_basketball', 'pred': 'predictions_nba_{d}.csv',
-                   'run': 'data_sets/NBA/fixtures_{d}.json', 'view': None},
+                   'run': 'data_sets/NBA/fixtures_{d}.json', 'view': None,
+                   'verif': 'verification_nba_{d}.csv'},
 }
 
 
@@ -3144,13 +3147,22 @@ def _dated_files(directory, pattern):
 
 
 def _day_status(slug, date_str):
-    """One cell of the grid: {'code': 'B'|'P'|'p'|'', 'title': tooltip}.
-    B = a slip with at least one non-VOID bet; P = predictions with rows;
-    p = a prediction run happened but produced no rows; '' = nothing."""
+    """One cell of the grid: {'code': 'B'|'P'|'p'|'', 'title': tooltip,
+    'verified': bool}. B = a slip with at least one non-VOID bet; P =
+    predictions with rows; p = a prediction run happened but produced no rows;
+    '' = nothing. `verified` = a verification CSV exists for the date."""
     cfg = _DAY_STATUS_PATHS.get(slug)
     if not cfg:
-        return {'code': '', 'title': ''}
+        return {'code': '', 'title': '', 'verified': False}
     out_dir = os.path.join(PROJECT_ROOT, cfg['dir'])
+    cell = _day_status_code(cfg, out_dir, slug, date_str)
+    cell['verified'] = bool(_dated_files(out_dir, cfg['verif'].format(d=date_str)))
+    if cell['verified']:
+        cell['title'] += ' · verified'
+    return cell
+
+
+def _day_status_code(cfg, out_dir, slug, date_str):
 
     n_bets = 0
     for path in _dated_files(out_dir, f'bets_{date_str}.json'):
@@ -3190,17 +3202,34 @@ def _day_status(slug, date_str):
     return {'code': '', 'title': 'Nothing run yet'}
 
 
-def _day_status_grid(days=5):
+# A day drops off the grid once these sports are all verified (a sport with
+# nothing run that day has nothing to verify, so it doesn't hold the day open).
+_DAY_GRID_DONE_SPORTS = ('football', 'euroleague')
+
+
+def _day_fully_verified(cells):
+    tracked = [cells[s] for s in _DAY_GRID_DONE_SPORTS if s in cells]
+    return (any(c['verified'] for c in tracked)
+            and all(c['verified'] or not c['code'] for c in tracked))
+
+
+def _day_status_grid(days=5, lookback=7):
+    """Columns from `lookback` days ago through `days - 1` days ahead. Past
+    days only appear while something on them is still awaiting verification;
+    any day whose football + euroleague work is verified is hidden."""
     today = datetime.date.today()
     sports = [s for s in SPORTS if s.get('active')]
     rows = []
-    for i in range(days):
+    for i in range(-lookback, days):
         d = today + datetime.timedelta(days=i)
         ds = d.isoformat()
-        rows.append({'date': ds,
-                     'label': 'Today' if i == 0 else ('Tomorrow' if i == 1 else d.strftime('%a')),
-                     'short': d.strftime('%d/%m'),
-                     'cells': {s['slug']: _day_status(s['slug'], ds) for s in sports}})
+        cells = {s['slug']: _day_status(s['slug'], ds) for s in sports}
+        if _day_fully_verified(cells):
+            continue
+        if i < 0 and not any(c['code'] or c['verified'] for c in cells.values()):
+            continue
+        rows.append({'date': ds, 'label': f'{d.day}/{d.month}',
+                     'today': i == 0, 'cells': cells})
     return sports, rows
 
 
