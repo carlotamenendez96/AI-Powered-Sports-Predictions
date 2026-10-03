@@ -89,6 +89,13 @@ def evaluate(date: str) -> int:
         return 0
 
     df = pd.DataFrame(rows)
+    for r in rows:
+        ou = (f"{r['O/U Lean']} {r['Over Line']} ({r['Actual Total']}) "
+              f"{'✓' if r['O/U Correct'] == 1 else '✗' if r['O/U Correct'] == 0 else 'push'}"
+              if r["O/U Lean"] else "no line")
+        print(f"    {r['Home Team']} v {r['Away Team']} {r['Final Score']} | "
+              f"pick {r['Predicted Winner']} ({_f(r['Home Win Prob']) or 0:.2f} home) "
+              f"{'✓' if r['Winner Correct'] else '✗'} | O/U {ou}")
     out = os.path.join(OUT_DIR, f"verification_euroleague_{date}.csv")
     df.to_csv(out, index=False)
     ou = df[df["O/U Correct"] != ""]

@@ -209,6 +209,9 @@ def resolve(sport: str, date: str | None = None, dry_run: bool = False) -> int:
                 bet["counterfactual_result"] = cf
             credit_by_lane[bet.get("lane", "value")] = \
                 credit_by_lane.get(bet.get("lane", "value"), 0.0) + payout
+            print(f"    {status:<4} {bet.get('lane', 'value'):<10} {bet.get('match', gid)} "
+                  f"({bet['final_score']}, total {res['total']}) | {bet.get('type')} "
+                  f"{bet.get('selection')} @ {bet.get('odds')} | stake {stake:.2f} → {bet['pnl']:+.2f}")
             grand["settled"] += 1
             grand[status.lower()] = grand.get(status.lower(), 0) + 1
             changed = True
