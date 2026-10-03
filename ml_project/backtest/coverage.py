@@ -8,7 +8,7 @@ implementation of the same eligibility rules that quietly drifts from it.
 A bet is **bound** when every one of these holds -- the same gauntlet the
 backtest's main loop walks:
   - it sits in a slip dated in range and in a requested lane
-  - it is settled (WON/LOST, or VOID via `status`)
+  - it is settled WON or LOST (`is_scoreable`) -- VOID is excluded
   - its match resolves to a predictions row and a verification row
   - its `match_id` has at least one snapshot in that date's live_history
 
@@ -27,6 +27,20 @@ OUTPUT_DIR = os.path.join(PROJECT_ROOT, 'output')
 LIVE_HISTORY_DIR = os.path.join(OUTPUT_DIR, 'live_history')
 
 ALL_LANES = ('value', 'conviction', 'model')
+
+
+def is_scoreable(bet) -> bool:
+    """Settled WON or LOST -- the only bets with a hold-to-settlement P/L.
+
+    VOID used to pass. Its baseline P/L is 0 (a refund), so any rule firing on
+    it was charged as cashing out a near-worthless position against a full
+    refund: on 2026-10-03, 32 VOID stop_loss triggers contributed -81.18 of
+    stop_loss's -151.26 total. A voided bet was never at risk, so there is no
+    cashout-vs-hold question to score. CASHED_OUT stays excluded too: its P/L
+    was set by an earlier cashout, so scoring it compares two cashouts.
+    """
+    return (bet.get('result', '') in ('WON', 'LOST')
+            or bet.get('status', '') in ('WON', 'LOST'))
 
 
 def _resolve_artifact(name: str):
@@ -137,8 +151,7 @@ def bound_bets(start: str = '0000-00-00', end: str = '9999-99-99', lanes=ALL_LAN
                 continue
             if bet.get('type', '1X2') not in ('1X2', 'O/U'):
                 continue
-            if (bet.get('result', '') not in ('WON', 'LOST')
-                    and bet.get('status', '') not in ('WON', 'LOST', 'VOID')):
+            if not is_scoreable(bet):
                 continue
             match_id = bet.get('match_id', '')
             if match_id not in live_ids:
