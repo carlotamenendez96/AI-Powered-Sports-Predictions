@@ -3,6 +3,7 @@
 #
 #   yesterday's finished games (euroleague-api, both E + U)
 #     → append-results into team_game_stats.csv (idempotent dedup)
+#     → refresh euroleague_elo.json (feature step) → settle slips → report
 #
 # v1 = data-side verification only: it keeps the corpus current so the next
 # retrain / serve-time feature computation sees the latest games. A
@@ -38,6 +39,9 @@ source "$VENV_PATH"
 
 mkdir -p logs output_euroleague
 export PYTHONPATH="${PYTHONPATH:-}:$(pwd):$(pwd)/ml_project:$(pwd)/ml_project/euroleague"
+# euroleague-api draws a tqdm bar per round; in a log file the \r-redrawn bars
+# collapse into one multi-KB line that buries the actual output.
+export TQDM_DISABLE=1
 
 # Append finished games to the corpus (idempotent — dedups on gameId,teamId).
 echo ""
@@ -47,6 +51,22 @@ if python3 ml_project/euroleague/fetch_euroleague_daily.py append-results --date
 else
     echo "[-] Result append failed."
     exit 1
+fi
+
+# Refresh the ELO cache from the updated corpus. predict_euroleague reads ELO
+# from euroleague_elo.json, which only this feature step writes — before this
+# was chained here it changed only on retrain, so every game since the last
+# retrain was missing from the ratings (measured 2026-10-03: 42 of 93 ladders
+# behind by up to 17 points, 11 teams absent). Rolling form needs nothing: the
+# predictor derives it from the corpus directly. ~0.5s. Also rewrites
+# training_data.csv, which the models only read at retrain. Non-fatal: a stale
+# cache degrades predictions, it does not invalidate the appended results.
+echo ""
+echo "[*] Refreshing ELO ratings ..."
+if python3 ml_project/euroleague/euroleague_feature_engineering.py >/dev/null; then
+    echo "[+] ELO cache refreshed ($(python3 -c 'import json;print(len(json.load(open("data_sets/Euroleague/euroleague_elo.json"))))') ladders)."
+else
+    echo "[!] ELO refresh failed (non-fatal) — predictions will use the previous ratings."
 fi
 
 # Settle bet slips against the freshly-appended results.

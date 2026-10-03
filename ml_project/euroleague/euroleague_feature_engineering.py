@@ -168,8 +168,11 @@ def build(input_path: str = INPUT, output_path: str = OUTPUT,
     print(f"  by competition: {wide.groupby('competition').size().to_dict()}")
     print(f"  home_win rate: {wide['home_win'].mean():.3f}   total μ={wide['total_points'].mean():.1f}")
 
-    with open(elo_cache_path, "w") as f:
+    # Atomic: verification now rewrites this daily, possibly while a predict run reads it.
+    tmp = elo_cache_path + ".tmp"
+    with open(tmp, "w") as f:
         json.dump({str(k): round(v, 2) for k, v in final_ratings.items()}, f, indent=2)
+    os.replace(tmp, elo_cache_path)
     print(f"  ELO cache: {len(final_ratings)} (team×competition) ladders → {elo_cache_path}")
     return wide
 
