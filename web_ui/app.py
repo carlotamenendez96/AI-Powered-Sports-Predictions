@@ -3149,8 +3149,8 @@ def _dated_files(directory, pattern):
 def _day_status(slug, date_str):
     """One cell of the grid: {'code': 'B'|'P'|'p'|'', 'title': tooltip,
     'verified': bool}. B = a slip with at least one non-VOID bet; P =
-    predictions with rows; p = a prediction run happened but produced no rows;
-    '' = nothing. `verified` = a verification CSV exists for the date."""
+    predictions with rows; p (shown as N/A) = a prediction run happened but
+    produced no rows; '' = nothing. `verified` = a verification CSV exists for the date."""
     cfg = _DAY_STATUS_PATHS.get(slug)
     if not cfg:
         return {'code': '', 'title': '', 'verified': False}

@@ -37,7 +37,7 @@
               {% if c.url %}<a href="{{ c.url }}" class="text-decoration-none day-link">{% endif %}
               {% if c.code == 'B' %}<span class="badge bg-success day-badge">B</span>
               {% elif c.code == 'P' %}<span class="badge bg-success bg-opacity-50 day-badge">P</span>
-              {% elif c.code == 'p' %}<span class="badge bg-secondary day-badge">P</span>
+              {% elif c.code == 'p' %}<span class="badge bg-secondary day-badge">N/A</span>
               {% endif %}
               {% if c.url %}</a>{% endif %}
               {% if c.verified %}<span class="badge bg-warning text-dark day-badge">V</span>{% endif %}
@@ -51,7 +51,7 @@
       <div class="small text-muted">
         <span class="badge bg-success">B</span> bets placed ·
         <span class="badge bg-success bg-opacity-50">P</span> predictions, no bets ·
-        <span class="badge bg-secondary">P</span> prediction ran, nothing to predict ·
+        <span class="badge bg-secondary">N/A</span> prediction ran, nothing to predict ·
         <span class="badge bg-warning text-dark">V</span> verified ·
         blank = nothing run. Past days stay until football and EuroLeague are verified. Hover a cell for counts.
       </div>
