@@ -13,6 +13,19 @@ def _poisson_cdf(k: int, lam: float) -> float:
     return sum(_poisson_pmf(i, lam) for i in range(k + 1))
 
 
+def _lambda_for_over(p_over: float, line_goals: int = 3) -> float:
+    """Poisson mean whose P(X >= line_goals) equals p_over (bisection)."""
+    p = min(0.99, max(0.01, p_over))
+    lo, hi = 0.01, 15.0
+    for _ in range(60):
+        mid = (lo + hi) / 2
+        if 1.0 - _poisson_cdf(line_goals - 1, mid) < p:
+            lo = mid
+        else:
+            hi = mid
+    return (lo + hi) / 2
+
+
 class LiveAdjuster:
     """
     Adjusts pre-match probabilities based on live match statistics and game state.
@@ -47,6 +60,29 @@ class LiveAdjuster:
         # Blend weight on observed-pace vs pre-match. Early game = trust pre-match,
         # late game = trust the score state. Crossover at ~30 minutes.
         self.OU_PACE_CROSSOVER_MIN = 30
+        # Calibration (2026-10-03, scripts/experiment_ou_live_calibration.py):
+        # the uncorrected adjuster predicted P(Over) 0.328 against an actual
+        # 0.424 over 412 matches -- the cause of stop_loss losing on Over
+        # bets. Three corrections, each switchable so the experiment can A/B
+        # them (all three off reproduces the old behaviour exactly; two on):
+        # - stoppage time: the match runs 90 + OU_STOPPAGE_MIN, so remaining
+        #   time is no longer 90 - minute and minute 90 no longer locks Under
+        #   (the scraper caps stoppage to 90, and 12 of 158 matches seen at
+        #   "90" still went Over);
+        # - observed-xG pace undershoots real goals: remaining xG is scaled
+        #   by OU_REMAINING_XG_MULT (the 2.6-goal fallback is already a goal
+        #   rate and is left alone);
+        # - OFF by default: a score-aware early prior (pre-match P(Over) ->
+        #   Poisson mean, scaled to remaining time and goals still needed).
+        #   It is the principled form, but it LOST to the plain pre-match
+        #   blend in all 5 out-of-fold folds: it makes a goalless first hour
+        #   even more pessimistic, while the plain blend's optimism happens
+        #   to offset the general undershoot. Kept switchable for re-testing.
+        # Values = the experiment's full-sample best (OOF log-loss 0.594 ->
+        # 0.565). Re-run the experiment as live_history grows.
+        self.OU_STOPPAGE_MIN = 4
+        self.OU_REMAINING_XG_MULT = 1.4
+        self.OU_SCORE_AWARE_PRIOR = False
 
     def adjust_ou_probabilities(self, pre_ou_probs, live_stats, minute, current_score,
                                 trace=None):
@@ -79,8 +115,10 @@ class LiveAdjuster:
         if current_goals >= 3:
             _t(branch='over_locked', current_goals=current_goals)
             return {'over': 0.99, 'under': 0.01}
+        match_len = 90 + self.OU_STOPPAGE_MIN
+        remaining_min = max(0.0, match_len - minute)
         # No time left to score → Under is locked in.
-        if minute >= 90:
+        if remaining_min <= 0:
             _t(branch='under_locked', current_goals=current_goals)
             return {'over': 0.01, 'under': 0.99}
 
@@ -88,10 +126,11 @@ class LiveAdjuster:
         xg_so_far = live_stats.get('xg_home', 0) + live_stats.get('xg_away', 0)
         if minute > 0 and xg_so_far > 0:
             pace_per_min = xg_so_far / minute
-            remaining_xg = min(pace_per_min * (90 - minute), self.OU_MAX_REMAINING_XG)
+            remaining_xg = min(pace_per_min * remaining_min, self.OU_MAX_REMAINING_XG)
+            remaining_xg *= self.OU_REMAINING_XG_MULT
         else:
             # Fall back to a league-average ~2.6 goals/match pace.
-            remaining_xg = 2.6 * (90 - minute) / 90
+            remaining_xg = 2.6 * remaining_min / 90
 
         # P(at least N more goals) where N = 3 - current_goals.
         need = max(0, 3 - current_goals)
@@ -100,20 +139,28 @@ class LiveAdjuster:
         else:
             p_over_pace = 1.0 - _poisson_cdf(need - 1, remaining_xg)
 
-        # Blend with pre-match: early minutes trust pre-match, late minutes trust
-        # observed-pace. Smooth crossover via sigmoid centered at OU_PACE_CROSSOVER_MIN.
-        # Weight on pace goes 0→1 as minute goes 0→90.
+        pre_over = float(pre_ou_probs.get('over', 0.5))
+        if self.OU_SCORE_AWARE_PRIOR:
+            lam_rem = _lambda_for_over(pre_over) * remaining_min / match_len
+            p_prior = 1.0 - _poisson_cdf(need - 1, lam_rem)
+        else:
+            p_prior = pre_over
+
+        # Blend with the prior: early minutes trust the prior, late minutes
+        # trust observed pace. Smooth crossover via sigmoid centered at
+        # OU_PACE_CROSSOVER_MIN. Weight on pace goes 0→1 as minute goes 0→90.
         x = (minute - self.OU_PACE_CROSSOVER_MIN) / 15.0
         pace_weight = 1.0 / (1.0 + math.exp(-x))
-        pre_over = float(pre_ou_probs.get('over', 0.5))
-        p_over = pace_weight * p_over_pace + (1 - pace_weight) * pre_over
+        p_over = pace_weight * p_over_pace + (1 - pace_weight) * p_prior
 
         # Clamp to keep callers safe.
         p_over = max(0.01, min(0.99, p_over))
         _t(branch='pace_blend', current_goals=current_goals,
            xg_so_far=round(xg_so_far, 3), remaining_xg=round(remaining_xg, 3),
+           remaining_min=round(remaining_min, 1),
            need=need, p_over_pace=round(p_over_pace, 4),
-           pace_weight=round(pace_weight, 4), pre_over=round(pre_over, 4))
+           pace_weight=round(pace_weight, 4), pre_over=round(pre_over, 4),
+           p_prior=round(p_prior, 4))
         return {'over': p_over, 'under': 1.0 - p_over}
         
     def adjust_probabilities(self, pre_probs, live_stats, minute, current_score,
