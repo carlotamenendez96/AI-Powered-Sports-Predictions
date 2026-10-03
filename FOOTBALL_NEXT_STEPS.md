@@ -60,6 +60,8 @@ Counting lives in `ml_project/backtest/coverage.py`, which `run_backtest.py` now
 | 2026-05-25 | n=264 (all synth) | +33.23 (+52% vs baseline) | +26.16 (+55%) | −22.63 (~4× more negative) |
 | 2026-09-10 synth arm | n=406 (all synth, 05-18→06-14) | +74.71 | +64.72 | −70.93 |
 | **2026-09-10 real arm** | **n=69 (all real, same window)** | **−11.14** | **−13.37** | **−15.61** |
+| 2026-10-01 real arm | n=843 real, 05-18→10-01 | −14.45 | −43.21 | −0.76 |
+| **2026-10-03 real arm** | **n=901 real, 05-18→10-03** | **−8.94** | **−36.11** | **+22.30** |
 
 Model-lane figures added at the 2026-05-25 run: `late_drift/model=+31.86`, `stop_loss/model=+42.95`, `lock_in_profit/model=−4.86`. **Direction stable**; magnitude shift >50% on every Value rule = synthetic-trajectory mistrust threshold engaged — real `live_history_*.jsonl` should drive future runs.
 
@@ -72,6 +74,8 @@ This is the Δ-stability rule firing as loudly as it can, and it **retires the "
 **Caveats, so this isn't over-read**: 69 real trajectories, thin per lane (conviction n=3, value n=11, model n=55) — the signal is the uniform *direction* across 13/15 cells, not any single figure. The real arm is a subset of the synthetic arm's bets, but that subset's baseline P/L (−8.96) is not anomalously bad against the full set's (−83.17), so the flip isn't a bad-subset artifact.
 
 **Consequence**: keep shadow mode on (`output/auto_cashout_armed.json`, `shadow: true`) — that is now evidence-backed, not precautionary. Do **not** tune `_AUTO_CASHOUT_*` thresholds against synthetic output.
+
+**2026-10-03 — real arm at 13× the data.** `stop_loss` and `late_drift` stay negative in **every** lane (model −54.15 / −42.57, conviction −61.00 / −63.24), confirming the 09-10 verdict. `momentum_fade` still negative. `lock_in_profit` is the only rule positive in all three lanes (+4.73 / +13.93 / +22.30) but **not sign-stable**: two days earlier, on 58 fewer trajectories, value was −0.76 and conviction −2.58. Watch it over the next 2–3 auto-runs; if it holds, the candidate change is to keep `lock_in` and drop `stop_loss` from `_cashout_decision()`. Same day, the dashboard's **Run backtest** button was found running `run_backtest.py` bare (30-day window, `data=auto`): 495 of its 1,327 bets were synthetic and it reported `stop_loss/model` **+89.74** against −54.15 real-only. The button now calls `check_backtest_due.py --run --force`, the same real-only path as the auto-run.
 
 **Bug fixed in the same run (2026-09-10)**: `load_pred_row` / `load_verif_row` in `scripts/run_backtest.py` looked only in `output/`, while `slips_in_range` also reads `output/history/`. Once the May–June prediction CSVs were soft-deleted to the archive, every bet in the only window with real trajectories was dropped as `no_pred` (422 of them) and the run fell back to synthetic **silently**. Now both loaders go through `_resolve_artifact`, which mirrors `slips_in_range`. Same archive-blindness class as `process_bet_verification`, which is still `output/`-only by design.
 

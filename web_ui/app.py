@@ -2930,15 +2930,19 @@ def run_backtest():
         flash('Backtest is already running!', 'warning')
         return redirect(url_for('football.index'))
     try:
-        script_path = os.path.join(PROJECT_ROOT, 'scripts', 'run_backtest.py')
+        # Delegates to the data-triggered auto-run (forced), so the button scores
+        # exactly what run_verification.sh does: --data real over first
+        # live_history day → today, default rules. It used to run
+        # run_backtest.py bare — 30-day window, data=auto — which on 2026-10-03
+        # filled 495 of 1,327 bets with synthetic trajectories, whose sign is
+        # inverted from reality (stop_loss/model +89.74 vs −54.15 real-only).
+        script_path = os.path.join(PROJECT_ROOT, 'scripts', 'check_backtest_due.py')
         log_file = open(os.path.join(LOG_DIR, 'backtest.log'), 'w')
         env = os.environ.copy()
         ml_paths = [PROJECT_ROOT, os.path.join(PROJECT_ROOT, 'ml_project')]
         env['PYTHONPATH'] = os.pathsep.join([p for p in ml_paths + [env.get('PYTHONPATH', '')] if p])
-        # Default rules (includes momentum_fade) over the default 30-day window,
-        # data=auto (real live_history trajectories where available).
         proc = subprocess.Popen(
-            ['venv/bin/python', script_path], cwd=PROJECT_ROOT,
+            ['venv/bin/python', script_path, '--run', '--force'], cwd=PROJECT_ROOT,
             stdout=log_file, stderr=subprocess.STDOUT, env=env)
         TASKS['backtest'] = {'process': proc, 'start_time': datetime.datetime.now()}
         flash('Cashout backtest started — refreshing when it finishes. '
