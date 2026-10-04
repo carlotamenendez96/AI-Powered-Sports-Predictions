@@ -25,6 +25,16 @@ INTERNATIONAL_BASES = {
     "EUROPE: Euro Qualification",
     "EUROPE: Euro Final Tournament",
     "EUROPE: UEFA Nations League",
+    # Added 2026-09-26. AFCON was whitelisted in target_leagues.json (15d1c08)
+    # but never registered here, so it was national-team football that routed
+    # nowhere: is_international() said False, and the club predictor then threw
+    # it away because 'AFRICA' is absent from its SUPPORTED_COUNTRIES set.
+    # Measured across three slates: 8 + 14 + 2 AFCON fixtures scraped, 0 rows
+    # in the matching predictions_<date>.csv. base_name() strips the
+    # " - Qualification" suffix, so this one entry covers the qualifiers too.
+    # The NT corpus supports them — all 24 scraped fixtures resolve to
+    # eloratings teams, and it carries "African Nations Cup [qualifier]" comps.
+    "AFRICA: Africa Cup of Nations",
 }
 
 # Subset played at neutral venues (finals tournaments) → predict orientation-

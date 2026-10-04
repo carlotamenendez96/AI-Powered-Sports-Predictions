@@ -1,0 +1,202 @@
+{% extends "layout.html" %}
+
+{% block content %}
+<div class="container-fluid mt-3">
+  <div class="d-flex justify-content-between align-items-baseline mb-3">
+    <h2 class="mb-0">▶ Actions</h2>
+    <span class="text-muted small">Every sport's pipelines in one place. Status refreshes every 2s.</span>
+  </div>
+
+  {# ---- Day-status grid: what has happened for each sport over the next 5 days ---- #}
+  <div class="card mb-3">
+    <div class="card-body py-2">
+      <div class="table-responsive">
+      <table class="table table-sm table-bordered text-center align-middle mb-1 day-grid">
+        <thead>
+          <tr>
+            <th class="text-start" style="width: 10rem;">Sport</th>
+            {% for r in grid_rows %}
+            <th{% if r.today %} class="text-primary"{% endif %}><strong>{{ r.label }}</strong></th>
+            {% endfor %}
+          </tr>
+        </thead>
+        <tbody>
+          {% for s in grid_sports %}
+          <tr>
+            <td class="text-start">
+              <a href="/{{ s.slug }}/" class="text-decoration-none text-reset fw-semibold">
+                {% if s.icon_img %}
+                  <img src="{{ url_for('static', filename=s.icon_img) }}" alt="" style="height: 18px; vertical-align: -3px;">
+                {% else %}{{ s.icon }}{% endif %}
+                {{ s.label }}
+              </a>
+            </td>
+            {% for r in grid_rows %}
+            {% set c = r.cells[s.slug] %}
+            <td title="{{ c.title }}{% if c.url %} — click to open{% endif %}">
+              {% if c.url %}<a href="{{ c.url }}" class="text-decoration-none day-link">{% endif %}
+              {% if c.code == 'B' %}<span class="badge bg-success day-badge">B</span>
+              {% elif c.code == 'P' %}<span class="badge bg-success bg-opacity-50 day-badge">P</span>
+              {% elif c.code == 'p' %}<span class="badge bg-secondary day-badge">N/A</span>
+              {% endif %}
+              {% if c.url %}</a>{% endif %}
+              {% if c.verified %}<span class="badge bg-warning text-dark day-badge">V</span>{% endif %}
+            </td>
+            {% endfor %}
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      </div>
+      <div class="small text-muted">
+        <span class="badge bg-success">B</span> bets placed ·
+        <span class="badge bg-success bg-opacity-50">P</span> predictions, no bets ·
+        <span class="badge bg-secondary">N/A</span> prediction ran, nothing to predict ·
+        <span class="badge bg-warning text-dark">V</span> verified ·
+        blank = nothing run. Past days stay until football and EuroLeague are verified. Hover a cell for counts.
+      </div>
+    </div>
+  </div>
+  <style>
+    .day-grid .day-badge { min-width: 1.8rem; font-size: .85rem; }
+    .day-grid .day-link .day-badge { cursor: pointer; }
+    .day-grid .day-link:hover .day-badge { filter: brightness(1.2); text-decoration: underline; }
+  </style>
+
+  <div class="row g-3">
+    {% for sport in action_sports %}
+    <div class="col-xl-4 col-lg-6">
+      <div class="card h-100">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <strong>
+            {% if sport.icon_img %}
+              <img src="{{ url_for('static', filename=sport.icon_img) }}" alt="" class="sport-icon me-1"
+                   style="height: 20px; vertical-align: -4px;">
+            {% else %}{{ sport.icon }}{% endif %}
+            {{ sport.label }}
+          </strong>
+          <a href="/{{ sport.slug }}/" class="small text-decoration-none">dashboard →</a>
+        </div>
+        <ul class="list-group list-group-flush">
+          {% for a in sport.actions %}
+          <li class="list-group-item" data-status-key="{{ a.status }}">
+            <div class="d-flex justify-content-between align-items-center mb-1">
+              <div>
+                <span class="fw-semibold">{{ a.icon }} {{ a.label }}</span>
+                <div class="text-muted small">{{ a.hint }}</div>
+              </div>
+              <a href="/football/logs/{{ a.log }}" target="_blank" class="small text-decoration-none text-nowrap ms-2"
+                 title="Open logs/{{ a.log }}">log ↗</a>
+            </div>
+
+            <form action="{{ a.url }}" method="post" class="action-run d-flex flex-wrap align-items-center gap-2"
+                  {% if a.confirm %}onsubmit="return confirm('Run {{ sport.label }} {{ a.label|lower }}? This takes a while.');"{% endif %}>
+              <input type="hidden" name="next" value="/actions">
+              {% if a.date %}
+              <input type="date" class="form-control form-control-sm" name="date" style="max-width: 11rem;"
+                     title="Target date (blank = {{ a.date }})">
+              {% endif %}
+              {% if a.force %}
+              <div class="form-check form-check-inline small mb-0">
+                <input class="form-check-input" type="checkbox" name="force" id="force-{{ sport.slug }}-{{ loop.index }}">
+                <label class="form-check-label" for="force-{{ sport.slug }}-{{ loop.index }}">force scrape</label>
+              </div>
+              {% endif %}
+              <button type="submit" class="btn btn-sm btn-primary run-btn">Run</button>
+              {% if a.date %}<span class="text-muted small">blank = {{ a.date }}</span>{% endif %}
+            </form>
+
+            <div class="action-status mt-2" style="display:none;">
+              <div class="d-flex align-items-center gap-2">
+                <span class="spinner-border spinner-border-sm text-primary" role="status"></span>
+                <small class="text-muted state-text">Running...</small>
+                <form action="{{ a.stop }}" method="post" class="m-0 ms-auto"
+                      onsubmit="return confirm('Stop {{ sport.label }} {{ a.label|lower }}?');">
+                  <input type="hidden" name="next" value="/actions">
+                  <button type="submit" class="btn btn-outline-danger btn-sm py-0">🛑 Stop</button>
+                </form>
+              </div>
+            </div>
+            <div class="action-result small mt-2" style="display:none;"></div>
+          </li>
+          {% endfor %}
+        </ul>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+<script>
+(function () {
+  function fmtDate(iso) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || '');
+    return m ? `${m[3]}/${m[2]}/${m[1]}` : (iso || '');
+  }
+  function elapsed(iso) {
+    if (!iso) return '';
+    const s = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000));
+    const m = Math.floor(s / 60);
+    return m ? `${m}m ${s % 60}s` : `${s}s`;
+  }
+
+  const rows = document.querySelectorAll('[data-status-key]');
+  // Only announce "completed" for runs this page watched start — /status
+  // keeps reporting a finished run's state until the next one begins.
+  const seenRunning = {};
+
+  function render(data) {
+    rows.forEach(row => {
+      const key = row.dataset.statusKey;
+      const info = data[key] || { state: 'idle' };
+      const status = row.querySelector('.action-status');
+      const result = row.querySelector('.action-result');
+      const btn = row.querySelector('.run-btn');
+
+      if (info.state === 'running') {
+        seenRunning[key] = true;
+        status.style.display = '';
+        result.style.display = 'none';
+        btn.disabled = true;
+        const d = fmtDate(info.target_date);
+        const t = elapsed(info.started);
+        row.querySelector('.state-text').innerText =
+          'Running' + (d ? ` for ${d}` : '') + (t ? ` · ${t}` : '') + '...';
+        return;
+      }
+      status.style.display = 'none';
+      btn.disabled = false;
+
+      if (info.state === 'error') {
+        result.className = 'action-result small mt-2 alert alert-danger py-1 px-2 mb-0';
+        result.innerHTML = '';
+        const title = document.createElement('strong');
+        title.innerText = 'Last run failed.';
+        const pre = document.createElement('pre');
+        pre.className = 'mb-0 mt-1';
+        pre.style.cssText = 'white-space:pre-wrap;font-size:0.72rem;';
+        pre.innerText = info.msg || 'Check the log.';
+        result.append(title, pre);
+        result.style.display = '';
+      } else if (info.state === 'empty') {
+        result.className = 'action-result small mt-2 alert alert-info py-1 px-2 mb-0';
+        result.innerText = 'No fixtures to predict.';
+        result.style.display = '';
+      } else if (info.state === 'completed' && seenRunning[key]) {
+        result.className = 'action-result small mt-2 text-success';
+        result.innerText = '✓ Completed';
+        result.style.display = '';
+      } else {
+        result.style.display = 'none';
+      }
+    });
+  }
+
+  function poll() {
+    fetch('/status').then(r => r.json()).then(render).catch(() => {});
+  }
+  poll();
+  setInterval(poll, 2000);
+})();
+</script>
+{% endblock %}

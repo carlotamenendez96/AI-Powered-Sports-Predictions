@@ -8,7 +8,7 @@ This document provides a summary of all Python (`.py`) and Shell (`.sh`) scripts
 | :--- | :--- |
 | `manage_server.sh` | **Server Control**: Starts, stops, and restarts the Flask Web UI in the background (`nohup`). |
 | `retrain_pipeline.sh` | **Automation**: Runs the full pipeline: Update Results &rarr; Update Standings &rarr; Retrain Model. |
-| `run_predictions.sh` | **Prediction**: Daily driver. Scrapes tomorrow's matches and generates `predictions_YYYY-MM-DD.csv`. |
+| `run_predictions.sh` | **Prediction**: Daily driver. Scrapes tomorrow's matches, refreshes the serve-time feature inputs (results CSVs + standings/form, age-gated at 12h; `--no-refresh` / `--refresh`), and generates `predictions_YYYY-MM-DD.csv`. |
 | `run_verification.sh` | **Verification**: Scrapes results for a past date (default: yesterday) and compares them with predictions. |
 | `update_leagues_data.sh` | **Data Update**: Runs the `standings` spider to update league tables and form JSONs. |
 | `run_live_analysis.py` | **Live Mode**: Standalone script to fetch live match stats and predict outcome in real-time. |

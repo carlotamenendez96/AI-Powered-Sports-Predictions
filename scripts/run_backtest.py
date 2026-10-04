@@ -38,7 +38,7 @@ from ml_project.backtest.trajectories import (
     RealTrajectory, SyntheticTrajectory,
 )
 from ml_project.backtest.coverage import (
-    load_pred_row, load_verif_row, slips_in_range,
+    is_scoreable, load_pred_row, load_verif_row, slips_in_range,
 )
 
 OUTPUT_DIR = os.path.join(PROJECT_ROOT, 'output')
@@ -131,14 +131,9 @@ def main():
             if bet.get('lane', 'value') not in lanes:
                 counters['lane_filtered'] += 1
                 continue
-            result = bet.get('result', '')
-            status = bet.get('status', '')
-            # CASHED_OUT bets are deliberately excluded from this filter
-            # (they pass neither tuple). Their P/L was set at cashout time,
-            # so simulating "what if we held/cashed at min N" against them
-            # would compare two cashouts rather than cashout-vs-hold. We
-            # have plenty of WON/LOST bets to evaluate rules against.
-            if result not in ('WON', 'LOST') and status not in ('WON', 'LOST', 'VOID'):
+            # WON/LOST only -- VOID and CASHED_OUT have no hold-to-settlement
+            # P/L to compare a cashout against (see coverage.is_scoreable).
+            if not is_scoreable(bet):
                 counters['unsettled'] += 1
                 continue
 

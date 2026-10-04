@@ -1,0 +1,101 @@
+{% extends "layout.html" %}
+
+{# The full predictions table. Deliberately NOT on the dashboard: that page
+   lists filenames and you open the one you want, matching football. #}
+
+{% block content %}
+<div class="container-fluid mt-3">
+
+  {% include "_sport_switcher.html" %}
+
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <div>
+      <h2 class="mb-0">
+        <img src="{{ url_for('static', filename='img/euroleague_logo_only.png') }}"
+             alt="EuroLeague logo" class="sport-icon-lg me-2" style="vertical-align: -6px;">
+        Predictions
+      </h2>
+      <div class="text-muted small"><code>{{ filename }}</code> · {{ rows|length }} game(s)</div>
+    </div>
+    <a href="{{ url_for('euroleague.index') }}" class="btn btn-outline-secondary btn-sm">← Dashboard</a>
+  </div>
+
+  {% if rows %}
+  <div class="card">
+    <div class="card-header d-flex justify-content-between">
+      <strong>{{ rows|length }} games</strong>
+      <span class="text-muted small">corpus-derived features · per-competition Platt-calibrated P(home_win)</span>
+    </div>
+    <div class="table-responsive">
+      <table class="table table-sm table-hover mb-0">
+        <thead>
+          <tr>
+            <th>Date</th>
+            <th>Comp</th>
+            <th>Matchup</th>
+            <th class="text-end">Home ELO</th>
+            <th class="text-end">Away ELO</th>
+            <th class="text-end">P(home)</th>
+            <th class="text-end small text-muted">P(raw)</th>
+            <th>Pick</th>
+            <th class="text-end">Pred Total</th>
+            <th>Totals bet</th>
+            <th class="text-end small text-muted">vs main line</th>
+            <th class="small text-muted">Cal</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for p in rows %}
+          <tr>
+            <td class="small text-muted">{{ p['Date'] }}</td>
+            <td><span class="badge {{ 'bg-warning text-dark' if p.get('competition') == 'U' else 'bg-dark' }}">{{ 'EuroCup' if p.get('competition') == 'U' else 'EuroLg' }}</span></td>
+            {# Short display names ("Panathinaikos"), falling back to the
+               canonical ones for rows written before that column existed. #}
+            <td><strong>{{ p.get('Home Short') or p['Home Team'] }}</strong>
+                <span class="text-muted">vs</span>
+                {{ p.get('Away Short') or p['Away Team'] }}</td>
+            <td class="text-end">{{ p['Home ELO'] }}</td>
+            <td class="text-end">{{ p['Away ELO'] }}</td>
+            <td class="text-end fw-semibold">{{ '%.3f'|format(p['Home Win Prob']|float) }}</td>
+            <td class="text-end small text-muted">{{ '%.3f'|format(p.get('Home Win Prob (raw)', 0)|float) }}</td>
+            <td>
+              {% if p['Predicted Winner'] == 'HOME' %}
+                <span class="badge bg-primary">HOME</span>
+              {% else %}
+                <span class="badge bg-secondary">AWAY</span>
+              {% endif %}
+            </td>
+            <td class="text-end">{{ '%.1f'|format(p['Predicted Total']|float) }}</td>
+            <td>
+              {% if p.get('Bet Line') %}
+                <span class="badge bg-success">{{ p['Bet Side'] }} {{ p['Bet Line'] }}</span>
+                <span class="small text-muted">@{{ p['Bet Odds'] }} {{ p.get('Bet Book', '') }}</span>
+              {% elif p.get('Totals Eligible') in (0, '0', '0.0') %}
+                {# Gated: the model was never trained on fixtures with this
+                   much missing history, so it does not price them. #}
+                <span class="badge bg-secondary" title="{{ p.get('Feature Gaps', '?') }} required features missing — model never trained on this shape">no bet · thin history</span>
+              {% else %}
+                <span class="text-muted small">—</span>
+              {% endif %}
+            </td>
+            <td class="text-end small text-muted">
+              {% if p.get('Cf Line') %}{{ p['Cf Side'] }} {{ p['Cf Line'] }} @{{ p['Cf Odds'] }}{% else %}—{% endif %}
+            </td>
+            <td class="small text-muted">{{ p.get('Cal Source', '') }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div class="card-footer small text-muted">
+      <strong>Totals bet</strong> is the row chosen from the bookmakers' ladder by model EV;
+      <strong>vs main line</strong> is the consensus-line bet recorded but <em>not</em> placed,
+      so the two can be compared once results settle.
+    </div>
+  </div>
+  {% else %}
+  <div class="alert alert-info">That file has no rows.</div>
+  {% endif %}
+
+</div>
+{% endblock %}

@@ -11,7 +11,12 @@
                                returned, pnl, win_rate, roi}}  (compute_sport_summary)
      - lane_defaults : {lane: {bankroll, cap_pct}}
      - history       : list of slips (compute_sport_summary['history'])
-     - dashboard_url : where to place new bets (per-sport dashboard)
+     - dashboard_url : the per-sport dashboard
+     - sport_slug    : 'euroleague' / 'nba' — drives the generator's endpoints
+                       AND scopes every DOM id, because this partial is
+                       included twice on /betting (once per sport) and
+                       duplicate ids would make the first panel's JS drive the
+                       second panel's markup.
 --------------------------------------------------------------------------- #}
 <style>
   .slip-toggle .slip-caret { transition: transform .15s ease; display: inline-block; }
@@ -37,7 +42,7 @@
               <th>Won / Lost / Void</th>
               <th>Win %</th>
               <th title="Total stake committed across all bets (including open/unsettled).">Stake</th>
-              <th title="Stake of settled bets only (excludes open/unsettled) — this is the ROI denominator.">Settled</th>
+              <th title="Stake of bets that resolved into a win or a loss — this is the ROI denominator. Excludes open bets and voided ones (a void is a refund, not an outcome).">Settled</th>
               <th>Returned</th>
               <th>Net P/L</th>
               <th>ROI %</th>
@@ -85,10 +90,54 @@
     </div>
 
     <!-- BETTING HISTORY (same tag as football's panel) -->
+    {# ---- SLIP GENERATOR (parity with football's betting page) ----
+       The per-sport dashboard links here with #generate-slip rather than
+       generating inline, so there is one place where slips are built. #}
+    <div class="card border-dark mb-4" id="generate-slip">
+      <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center">
+        <h4 class="mb-0">🎰 Generate Bet Slip · {{ sport_label|default('') }}</h4>
+        <span class="small text-white-50">three lanes · virtual money</span>
+      </div>
+      <div class="card-body">
+        <div class="d-flex gap-2 align-items-end flex-wrap mb-3">
+          <div style="width: 220px;">
+            <label for="predDate-{{ sport_slug }}" class="form-label small mb-1"
+                   title="Dates with a predictions file and no slip yet.">Prediction date</label>
+            <select id="predDate-{{ sport_slug }}" class="form-select form-select-sm">
+              <option value="">— loading… —</option>
+            </select>
+          </div>
+          <button id="genBtn-{{ sport_slug }}" class="btn btn-dark btn-lg flex-grow-1"
+                  onclick="genSlip_{{ sport_slug }}()">🎰 Generate Slip</button>
+        </div>
+
+        <div id="slipResult-{{ sport_slug }}" style="display:none;">
+          <div class="alert alert-info py-2" id="slipSummary-{{ sport_slug }}"></div>
+          <div class="table-responsive">
+            <table class="table table-sm table-hover">
+              <thead><tr>
+                <th>Lane</th><th>Match</th>
+                <th title="ML = moneyline (winner), O/U = total points.">Market</th><th>Pick</th>
+                <th class="text-end">Odds</th><th class="text-end">Conf</th>
+                <th class="text-end">EV</th><th class="text-end">Stake €</th>
+              </tr></thead>
+              <tbody id="slipRows-{{ sport_slug }}"></tbody>
+            </table>
+          </div>
+          <div class="d-flex justify-content-between align-items-center">
+            <div>Total stake: <strong>€<span id="slipTotal-{{ sport_slug }}">0.00</span></strong></div>
+            <button class="btn btn-success" onclick="placeSlip_{{ sport_slug }}()">📥 Place Bets</button>
+          </div>
+        </div>
+        <div id="slipEmpty-{{ sport_slug }}" class="text-muted small" style="display:none;"></div>
+      </div>
+    </div>
+
     <h3 class="mt-4 mb-3 border-bottom pb-2">📜 Betting History</h3>
     {% if history %}
     {% for slip in history %}
-    <div class="card mb-3 border-{{ 'success' if slip.status == 'CLOSED' and slip.pnl > 0 else ('danger' if slip.status == 'CLOSED' and slip.pnl < 0 else 'secondary') }}">
+    {# id = deep-link target from the Actions page day grid (B badge). #}
+    <div id="slip-{{ sport_slug }}-{{ slip.date }}" class="slip-card card mb-3 border-{{ 'success' if slip.status == 'CLOSED' and slip.pnl > 0 else ('danger' if slip.status == 'CLOSED' and slip.pnl < 0 else 'secondary') }}">
       <div class="card-header d-flex justify-content-between align-items-center">
         <div class="slip-toggle d-flex align-items-center gap-2 collapsed"
              role="button" style="cursor: pointer;"
@@ -118,6 +167,31 @@
             {% endif %}
           </span>
         </div>
+        {# Cancel is only offered while nothing has settled: it refunds every
+           lane's stake, which would be wrong once some bets have resolved.
+           Plain URL rather than url_for() because this partial is shared with
+           NBA, whose blueprint is not always registered. #}
+        {% set _all_open = slip.status == 'OPEN' and slip.bets|length > 0
+             and slip.bets|rejectattr('status', 'equalto', 'OPEN')|list|length == 0 %}
+        {% if _all_open %}
+        <form action="/{{ sport_slug }}/cancel_slip/{{ slip.date }}" method="post" class="m-0"
+              onsubmit="return confirm('Cancel this slip? Every bet is still OPEN, so all stakes are refunded to their lane bankrolls and the slip is archived. This cannot be undone.');">
+          <button type="submit" class="btn btn-outline-danger btn-sm"
+                  title="Refunds every lane's stake and archives the slip (virtual money).">
+            ❌ Cancel Slip
+          </button>
+        </form>
+        {% endif %}
+        {% if slip.status == 'CLOSED' %}
+        <form action="/{{ sport_slug }}/archive/{{ slip.filename }}" method="post" class="m-0"
+              onsubmit="return confirm('Archive this slip? It will be hidden from the list but still counted in the comparison totals.');">
+          <button type="submit" class="btn btn-outline-secondary btn-sm" title="Archive (soft delete)">📁 Archive</button>
+        </form>
+        {% elif not _all_open %}
+        <span class="text-muted small" title="Open slips can't be archived — settlement only looks in the sport's output dir, not history/">
+          🔒 Archive available after settlement
+        </span>
+        {% endif %}
       </div>
       <div class="card-body p-0 collapse" id="bbslip-body-{{ loop.index }}">
         <div class="table-responsive">
@@ -169,9 +243,21 @@
                   {% elif bet.result == 'LOST' %}
                   <span class="badge bg-danger">LOST</span>
                   {% elif bet.status == 'VOID' %}
-                  <span class="badge bg-warning text-dark">VOID</span>
+                  <span class="badge bg-warning text-dark"
+                        title="Voided{% if bet.voided_timestamp %} at {{ bet.voided_timestamp }}{% endif %} — stake refunded">VOID</span>
                   {% else %}
-                  <span class="badge bg-secondary">OPEN</span>
+                  <div class="d-flex align-items-center gap-1">
+                    <span class="badge bg-secondary">OPEN</span>
+                    {% if bet.bet_id %}
+                    {# Voids cascade across every lane holding this bet_id. #}
+                    <form action="/{{ sport_slug }}/void_bet/{{ bet.bet_id }}" method="post" class="m-0"
+                          onsubmit="return confirm('Mark this bet VOID (game postponed/cancelled)? Stake €{{ bet.get('stake_units', 0)|round(2) }} is refunded to the {{ _lane }} bankroll.');"
+                          title="For postponed / cancelled games that will never settle.">
+                      <button type="submit" class="btn btn-sm btn-outline-warning py-0 px-1"
+                              style="font-size: 0.7rem;">⊘ Void</button>
+                    </form>
+                    {% endif %}
+                  </div>
                   {% endif %}
                 </td>
               </tr>
@@ -191,3 +277,83 @@
 
   </div>
 </div>
+
+<script>
+(function () {
+  const SLUG = "{{ sport_slug }}";
+  const LABEL = "{{ sport_label|default('') }}";
+  let slip = null;
+
+  const $ = (id) => document.getElementById(id + "-" + SLUG);
+
+  // Lane colours must match the rest of the app: value = soft lavender
+  // (.bg-lane-value, defined in theme.css), conviction = amber, model = sky.
+  // Anything else and the generated slip reads as a different taxonomy from
+  // the history table right above it.
+  const LANE_BADGE = {
+    value: "bg-lane-value text-dark",
+    conviction: "bg-warning text-dark",
+    model: "bg-info text-dark",
+  };
+  const laneClass = (l) => LANE_BADGE[l] || "bg-secondary";
+
+  // Populate the date picker from the sport's own available-dates endpoint.
+  fetch(`/${SLUG}/predictions/available`)
+    .then(r => r.json())
+    .then(d => {
+      const sel = $("predDate");
+      const dates = d.dates || [];
+      sel.innerHTML = dates.length
+        ? dates.map(x => `<option value="${x}">${x}</option>`).join("")
+        : '<option value="">— no unbet prediction dates —</option>';
+      if (!dates.length) $("genBtn").disabled = true;
+    })
+    .catch(() => { $("predDate").innerHTML = '<option value="">— unavailable —</option>'; });
+
+  window["genSlip_" + SLUG] = async function () {
+    const date = $("predDate").value;
+    const r = await fetch(`/${SLUG}/auto_wager` + (date ? `?date=${date}` : ""));
+    const d = await r.json();
+    if (d.error) { alert("Auto-wager: " + d.error); return; }
+    if (!d.bets || !d.bets.length) {
+      $("slipResult").style.display = "none";
+      const e = $("slipEmpty");
+      e.style.display = "";
+      e.textContent = "No bets generated for " + (date || "the latest slate") +
+        (d.odds_present ? "." : " — no odds file for that date yet.");
+      return;
+    }
+    slip = d;
+    $("slipEmpty").style.display = "none";
+    $("slipSummary").innerHTML = Object.entries(d.lanes || {}).map(([n, i]) =>
+      `<span class="badge ${laneClass(n)} me-2">${n}: ${i.count} bets · €${i.total_stake}` +
+      `${i.scaled ? " (cap-scaled)" : ""}</span>`).join("");
+    $("slipRows").innerHTML = d.bets.map(b => {
+      const mkt = b.type === "O/U" ? "bg-secondary" : "bg-dark";
+      const ev = Number(b.ev);
+      return `<tr><td><span class="badge ${laneClass(b.lane)}">${b.lane}</span></td>` +
+        `<td>${b.match}</td>` +
+        `<td><span class="badge ${mkt}">${b.type || "ML"}</span></td>` +
+        `<td class="fw-bold">${b.selection}</td><td class="text-end">${b.odds}</td>` +
+        `<td class="text-end">${b.conf}</td>` +
+        `<td class="text-end ${ev > 0 ? "text-success" : ev < 0 ? "text-danger" : ""}">${b.ev}</td>` +
+        `<td class="text-end">${Number(b.stake_units).toFixed(2)}</td></tr>`;
+    }).join("");
+    $("slipTotal").textContent = Number(d.total_stake).toFixed(2);
+    $("slipResult").style.display = "";
+  };
+
+  window["placeSlip_" + SLUG] = async function () {
+    if (!slip || !slip.bets.length) { alert("Generate a slip first."); return; }
+    if (!confirm(`Place ${slip.bets.length} ${LABEL} virtual bets for €${Number(slip.total_stake).toFixed(2)}?`)) return;
+    const r = await fetch(`/${SLUG}/place_bets`, {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({bets: slip.bets, date: slip.date}),
+    });
+    const d = await r.json();
+    if (d.error) { alert("Place failed: " + d.error); return; }
+    alert(d.message + "\nNew " + LABEL + " bankroll: €" + d.new_balance);
+    location.reload();
+  };
+})();
+</script>

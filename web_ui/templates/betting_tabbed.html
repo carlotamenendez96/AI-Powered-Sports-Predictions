@@ -149,7 +149,7 @@
     <div class="tab-pane fade {% if active_tab == 'euroleague' %}show active{% endif %}"
          id="tab-euroleague" role="tabpanel" aria-labelledby="tab-euroleague-btn">
       {% if euroleague_summary %}
-      {% with sport_label='EuroLeague',
+      {% with sport_label='EuroLeague', sport_slug='euroleague',
               lane_stats=euroleague_summary.lane_stats,
               history=euroleague_summary.history,
               lane_defaults=euroleague_lane_defaults,
@@ -165,7 +165,7 @@
     <div class="tab-pane fade {% if active_tab == 'nba' %}show active{% endif %}"
          id="tab-nba" role="tabpanel" aria-labelledby="tab-nba-btn">
       {% if nba_summary %}
-      {% with sport_label='NBA',
+      {% with sport_label='NBA', sport_slug='nba',
               lane_stats=nba_summary.lane_stats,
               history=nba_summary.history,
               lane_defaults=nba_lane_defaults,
@@ -180,7 +180,31 @@
   </div>
 </div>
 
+<style>
+  .slip-card { scroll-margin-top: 80px; }   /* clear the sticky navbar */
+  .slip-card.slip-target { box-shadow: 0 0 0 3px rgba(var(--bs-primary-rgb), .6) !important;
+                           transition: box-shadow .4s ease; }
+</style>
 <script>
+  // Deep link from the Actions page grid: /betting?tab=<sport>#slip-<sport>-<date>.
+  // ?tab= already renders the right tab server-side; here we expand that
+  // slip's collapsed body, scroll to it and outline it for a few seconds.
+  // Deferred to DOMContentLoaded: layout.html loads bootstrap.bundle AFTER
+  // the content block, so window.bootstrap does not exist yet at this point.
+  document.addEventListener('DOMContentLoaded', function () {
+    const id = decodeURIComponent(window.location.hash.slice(1));
+    if (!id.startsWith('slip-')) return;
+    const card = document.getElementById(id);
+    if (!card) return;
+    const body = card.querySelector('.collapse');
+    if (body && window.bootstrap) bootstrap.Collapse.getOrCreateInstance(body, { toggle: false }).show();
+    const toggle = card.querySelector('.slip-toggle');
+    if (toggle) { toggle.classList.remove('collapsed'); toggle.setAttribute('aria-expanded', 'true'); }
+    card.classList.add('slip-target');
+    setTimeout(function () { card.scrollIntoView({ block: 'start' }); }, 150);
+    setTimeout(function () { card.classList.remove('slip-target'); }, 4000);
+  });
+
   // Keep the open tab across a page refresh: when a tab is shown, write its
   // slug into the URL's ?tab= param (replaceState — no history spam), so a
   // reload re-renders the same tab server-side. Also restored from localStorage
@@ -200,13 +224,16 @@
       });
     });
     // Fallback: no ?tab in the URL but a remembered tab → activate it.
-    const params = new URLSearchParams(window.location.search);
-    if (!params.get('tab')) {
+    // On DOMContentLoaded for the same reason as above — before it,
+    // window.bootstrap is undefined and this silently did nothing.
+    document.addEventListener('DOMContentLoaded', function () {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('tab')) return;
       let saved = null;
       try { saved = localStorage.getItem('bettingTab'); } catch (e) {}
       const btn = saved && document.getElementById('tab-' + saved + '-btn');
       if (btn && window.bootstrap) { new bootstrap.Tab(btn).show(); }
-    }
+    });
   })();
 </script>
 {% endblock %}

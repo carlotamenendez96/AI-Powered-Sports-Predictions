@@ -120,6 +120,31 @@ def get_bankroll(sport_slug, lane='value'):
     return get_sport_config(sport_slug)['bankrolls'][lane]['current']
 
 
+def fund_bankroll(sport_slug, amount, lane='value'):
+    """Deposit `amount` into one lane: raises BOTH `current` and `initial`.
+
+    Distinct from `update_bankroll`, which moves only `current` because it
+    represents winning or losing money already staked. A deposit adds capital,
+    so the baseline has to move with the balance — otherwise `current -
+    initial` reads the new funding as profit. Use this to open a sport's lanes
+    or to top them up; use `update_bankroll` for bets and settlements.
+
+    Returns the lane's new (current, initial).
+    """
+    if lane not in LANES:
+        raise ValueError(f"Unknown lane: {lane!r}. Valid lanes: {LANES}")
+    if amount <= 0:
+        raise ValueError("Deposit must be positive; use update_bankroll for debits.")
+    cfg = _load()
+    bankrolls = (cfg.setdefault('sports', {}).setdefault(sport_slug, {})
+                    .setdefault('bankrolls', _empty_bankrolls()))
+    bucket = bankrolls.setdefault(lane, dict(DEFAULT_LANE_BANKROLL))
+    bucket['current'] = round(bucket.get('current', 0.0) + amount, 2)
+    bucket['initial'] = round(bucket.get('initial', 0.0) + amount, 2)
+    _save(cfg)
+    return bucket['current'], bucket['initial']
+
+
 def update_bankroll(sport_slug, delta, lane='value'):
     """Add `delta` to one lane's current bankroll, return the new value.
 

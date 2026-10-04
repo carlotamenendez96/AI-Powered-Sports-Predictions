@@ -66,9 +66,9 @@ football_bp = Blueprint('football', __name__)
 
 
 # Register Blueprints
-from nba.routes import nba_bp, NBA_TASKS  # NBA reactivated 2026-05-28 (Phase 3)
+from nba.routes import nba_bp, NBA_TASKS, NBA_TASK_META  # NBA reactivated 2026-05-28 (Phase 3)
 app.register_blueprint(nba_bp, url_prefix='/nba')
-from euroleague.routes import euroleague_bp, EUROLEAGUE_TASKS  # Euroleague Phase 3 (2026-05-29)
+from euroleague.routes import euroleague_bp, EUROLEAGUE_TASKS, EUROLEAGUE_TASK_META  # Euroleague Phase 3 (2026-05-29)
 app.register_blueprint(euroleague_bp, url_prefix='/euroleague')
 
 # Football blueprint registration happens at the bottom of this file,
@@ -225,7 +225,7 @@ def index():
             else:
                 row['Bet_Settled'] = 0
                 row['Bet_Stake'] = row['Bet_Returned'] = row['Bet_PnL'] = row['Bet_ROI'] = None
-            row['Bet_Open_Stake'] = round(b['stake'] - b['settled_stake'], 2) if open_count else None
+            row['Bet_Open_Stake'] = round(b['open_stake'], 2) if open_count else None
             row['Bet_Open_Count'] = open_count
     except Exception:
         pass
@@ -246,7 +246,17 @@ def index():
     # gated behind FOOTBALL_NEXT_STEPS phase 7.
     _attach_open_bets(live_matches)
 
+    _latest_pred = predictions[0]['filename'] if predictions else None
+    _lane_br = lane_bankrolls('football')
     return render_template('dashboard.html',
+                          # Minimal header, mirroring the Euroleague dashboard:
+                          # sport title + latest prediction file + per-lane
+                          # bankroll card. Named `lane_br` rather than
+                          # `bankrolls` so it does not shadow the per-SPORT map
+                          # the inject_bankroll context processor supplies.
+                          lane_br=_lane_br,
+                          total_bankroll=round(sum(_lane_br.values()), 2),
+                          pred_file=_latest_pred,
                           predictions=predictions,
                           verifications=verifications,
                           league_stats=league_stats,
@@ -731,6 +741,11 @@ def _attach_open_bets(live_matches):
     live_matches[:] = [m for m in live_matches if not _all_terminal(m)]
 
 
+# Exit code bin/run_predictions.sh uses for "the scrape worked, the day just has
+# no fixtures we predict". Keep in sync with EXIT_NO_FIXTURES in that script.
+EXIT_NO_FIXTURES = 3
+
+
 @app.route('/status')
 def get_status():
     status = {}
@@ -747,27 +762,62 @@ def get_status():
                 status[task_name] = {'state': 'running'}
                 if task_info.get('target_date'):
                     status[task_name]['target_date'] = task_info['target_date']
+                if task_info.get('start_time'):
+                    status[task_name]['started'] = task_info['start_time'].isoformat()
             elif poll == 0:
                 status[task_name] = {'state': 'completed'}
             else:
+                # bin/run_predictions.sh exits EXIT_NO_FIXTURES when the day
+                # page loaded fine but held nothing to predict (cup day, or a
+                # slate that has already kicked off). That is a normal outcome,
+                # not a failure, so it gets its own state and the dashboard
+                # shows a notice rather than "Prediction failed".
+                empty = (poll == EXIT_NO_FIXTURES)
                 # Capture last lines of log directly
-                log_file = os.path.join(LOG_DIR, f"{task_name}.log")
+                # The task's own log name when it recorded one ('update' writes
+                # update_data.log), else the <task>.log convention.
+                log_file = os.path.join(LOG_DIR, task_info.get('log') or f"{task_name}.log")
                 error_msg = 'Unknown error'
                 if os.path.exists(log_file):
                      try:
-                         # Get last 3 lines
-                         lines = subprocess.check_output(['tail', '-n', '3', log_file]).decode('utf-8')
-                         error_msg = lines.strip()
+                         lines = subprocess.check_output(
+                             ['tail', '-n', '12', log_file]).decode('utf-8').splitlines()
+                         if empty:
+                             # Pull the wrapper's own explanation block rather
+                             # than a blind tail: scrapy writes deprecation
+                             # warnings to the same stream and they can land
+                             # after it.
+                             for i, ln in enumerate(lines):
+                                 if ln.startswith('[=]'):
+                                     lines = [l for l in lines[i:] if l.strip()]
+                                     break
+                             else:
+                                 lines = lines[-3:]
+                         else:
+                             lines = lines[-3:]
+                         error_msg = "\n".join(lines).strip()
                      except:
                          pass
-                status[task_name] = {'state': 'error', 'msg': error_msg}
+                status[task_name] = {'state': 'empty' if empty else 'error',
+                                     'msg': error_msg}
+                # A terminal state is reported on every poll until the next run
+                # starts, so the dashboard needs to know WHICH run it is looking
+                # at to remember that the banner was dismissed across reloads.
+                # start_time is unique per run and already tracked.
+                if task_info.get('start_time'):
+                    status[task_name]['run_id'] = task_info['start_time'].isoformat()
+                if task_info.get('target_date'):
+                    status[task_name]['target_date'] = task_info['target_date']
         elif task_info and task_info.get('state'): # Thread tasks wrapper
              status[task_name] = {'state': task_info['state'], 'msg': task_info.get('msg', '')}
         else:
             status[task_name] = {'state': 'idle'}
             
     # Check NBA + Euroleague Tasks (same Popen-dict shape, slug-prefixed keys).
-    for prefix, task_dict in (("nba", NBA_TASKS), ("euroleague", EUROLEAGUE_TASKS)):
+    # NBA + Euroleague also carry run metadata (target_date / run_id) and a log
+    # tail on error, so its dashboard can show football's status bar.
+    for prefix, task_dict, meta_dict in (("nba", NBA_TASKS, NBA_TASK_META),
+                                         ("euroleague", EUROLEAGUE_TASKS, EUROLEAGUE_TASK_META)):
         for task_name, proc in task_dict.items():
             key = f"{prefix}_{task_name}"
             if proc:
@@ -777,7 +827,22 @@ def get_status():
                 elif poll == 0:
                     status[key] = {'state': 'completed'}
                 else:
-                    status[key] = {'state': 'error'}
+                    error_msg = 'Unknown error'
+                    log_file = os.path.join(LOG_DIR, f"{key}.log")
+                    if os.path.exists(log_file):
+                        try:
+                            lines = subprocess.check_output(
+                                ['tail', '-n', '3', log_file]).decode('utf-8').splitlines()
+                            error_msg = "\n".join(lines).strip() or error_msg
+                        except Exception:
+                            pass
+                    status[key] = {'state': 'error', 'msg': error_msg}
+                meta = meta_dict.get(task_name) or {}
+                if meta.get('target_date'):
+                    status[key]['target_date'] = meta['target_date']
+                if meta.get('start_time'):
+                    status[key]['run_id'] = meta['start_time'].isoformat()
+                    status[key]['started'] = status[key]['run_id']
             else:
                 status[key] = {'state': 'idle'}
 
@@ -2160,7 +2225,22 @@ def _load_slip(filepath):
 def _empty_bet_stats():
     return {'bets': 0, 'settled': 0, 'won': 0, 'lost': 0, 'void': 0,
             'cashed_out': 0, 'stake': 0.0, 'settled_stake': 0.0,
+            'open_stake': 0.0, 'void_stake': 0.0,
             'returned': 0.0, 'pnl': 0.0}
+
+
+def _bet_pnl(bet, default):
+    """Net P/L of one settled bet, tolerating the pre-rename field name.
+
+    `resolve_daily_bets` writes both `pnl` and its back-compat alias `profit`,
+    but slips written before the rename carry `profit` only. Reading `pnl`
+    alone booked those wins as break-even (36 bets across the three May-2026
+    slips, understating P/L by EUR 48.42)."""
+    for key in ('pnl', 'profit'):
+        v = bet.get(key)
+        if v is not None:
+            return float(v)
+    return default
 
 
 def _accumulate_bet(s, bet):
@@ -2168,20 +2248,27 @@ def _accumulate_bet(s, bet):
     realized money). Shared by the per-lane (compute_sport_summary) and
     per-league (compute_league_betting_summary) aggregations so cashout / void /
     won / lost are counted identically. Cashed-out bets are realized by their
-    stored cashout_amount / pnl (a cashout > stake is a win, < stake a loss)."""
+    stored cashout_amount / pnl (a cashout > stake is a win, < stake a loss).
+
+    VOID stake goes to `void_stake`, deliberately NOT to `settled_stake` or
+    `returned`: a void is a refund, not an outcome, and booking it as a bet
+    that returned exactly its stake drags ROI toward zero (78 voided bets were
+    holding the conviction lane at +2.6% when it had earned +3.0%). The money
+    buckets keep the identity pnl == returned - settled_stake."""
     stake = float(bet.get('stake_units', 0) or 0)
     status = bet.get('status', 'OPEN')
     result = bet.get('result', '')
     s['bets'] += 1
     s['stake'] += stake
     if status == 'OPEN':
+        s['open_stake'] += stake
         return
     s['settled'] += 1
-    s['settled_stake'] += stake  # ROI denominator: only stake of resolved bets
     if status == 'CASHED_OUT' or result == 'CASHED_OUT':
         s['cashed_out'] += 1
+        s['settled_stake'] += stake
         cashout_amount = float(bet.get('cashout_amount', stake))
-        pnl_v = float(bet.get('pnl', cashout_amount - stake))
+        pnl_v = _bet_pnl(bet, cashout_amount - stake)
         s['returned'] += cashout_amount
         s['pnl'] += pnl_v
         if pnl_v > 0:
@@ -2190,28 +2277,30 @@ def _accumulate_bet(s, bet):
             s['lost'] += 1
     elif result == 'WON' or status == 'WON':
         s['won'] += 1
-        s['returned'] += stake + float(bet.get('pnl', 0))
-        s['pnl'] += float(bet.get('pnl', 0))
+        s['settled_stake'] += stake
+        pnl_v = _bet_pnl(bet, 0.0)
+        s['returned'] += stake + pnl_v
+        s['pnl'] += pnl_v
     elif result == 'LOST' or status == 'LOST':
         s['lost'] += 1
-        s['pnl'] += float(bet.get('pnl', -stake))
-    else:  # VOID (or unrecognised terminal status)
+        s['settled_stake'] += stake
+        s['pnl'] += _bet_pnl(bet, -stake)
+    else:  # VOID (or unrecognised terminal status) — refunded, see docstring
         s['void'] += 1
-        s['returned'] += stake
+        s['void_stake'] += stake
 
 
 def _finalize_bet_stats(s):
     """Add win_rate + roi and round the money fields. Mutates + returns `s`."""
     decided = s['won'] + s['lost']
     s['win_rate'] = round((s['won'] / decided * 100) if decided > 0 else 0.0, 1)
-    # ROI is realized: divide P/L by stake of SETTLED bets only, so open
-    # (unrealized) bets don't deflate the figure. `stake` stays the total
-    # committed amount (used for exposure display).
+    # ROI is realized: divide P/L by the stake that actually resolved into a
+    # win or a loss, so neither open (unrealized) nor voided (refunded) stake
+    # deflates the figure. `stake` stays the total committed amount (used for
+    # exposure display); the two excluded slices are kept separately.
     s['roi'] = round((s['pnl'] / s['settled_stake'] * 100) if s['settled_stake'] > 0 else 0.0, 1)
-    s['stake'] = round(s['stake'], 2)
-    s['settled_stake'] = round(s['settled_stake'], 2)
-    s['returned'] = round(s['returned'], 2)
-    s['pnl'] = round(s['pnl'], 2)
+    for _k in ('stake', 'settled_stake', 'open_stake', 'void_stake', 'returned', 'pnl'):
+        s[_k] = round(s[_k], 2)
     return s
 
 
@@ -2344,7 +2433,8 @@ def update_data():
         log_file = open(os.path.join(LOG_DIR, 'update_data.log'), 'w')
         proc = subprocess.Popen(['venv/bin/python', script_path], cwd=PROJECT_ROOT, stdout=log_file, stderr=subprocess.STDOUT)
         
-        TASKS['update'] = {'process': proc, 'start_time': datetime.datetime.now()}
+        TASKS['update'] = {'process': proc, 'start_time': datetime.datetime.now(),
+                           'log': 'update_data.log'}
         
         flash('Data update started! Check <a href="/logs/update_data.log">logs</a> for status.', 'success')
     except Exception as e:
@@ -3017,15 +3107,19 @@ def run_backtest():
         flash('Backtest is already running!', 'warning')
         return redirect(url_for('football.index'))
     try:
-        script_path = os.path.join(PROJECT_ROOT, 'scripts', 'run_backtest.py')
+        # Delegates to the data-triggered auto-run (forced), so the button scores
+        # exactly what run_verification.sh does: --data real over first
+        # live_history day → today, default rules. It used to run
+        # run_backtest.py bare — 30-day window, data=auto — which on 2026-10-03
+        # filled 495 of 1,327 bets with synthetic trajectories, whose sign is
+        # inverted from reality (stop_loss/model +89.74 vs −54.15 real-only).
+        script_path = os.path.join(PROJECT_ROOT, 'scripts', 'check_backtest_due.py')
         log_file = open(os.path.join(LOG_DIR, 'backtest.log'), 'w')
         env = os.environ.copy()
         ml_paths = [PROJECT_ROOT, os.path.join(PROJECT_ROOT, 'ml_project')]
         env['PYTHONPATH'] = os.pathsep.join([p for p in ml_paths + [env.get('PYTHONPATH', '')] if p])
-        # Default rules (includes momentum_fade) over the default 30-day window,
-        # data=auto (real live_history trajectories where available).
         proc = subprocess.Popen(
-            ['venv/bin/python', script_path], cwd=PROJECT_ROOT,
+            ['venv/bin/python', script_path, '--run', '--force'], cwd=PROJECT_ROOT,
             stdout=log_file, stderr=subprocess.STDOUT, env=env)
         TASKS['backtest'] = {'process': proc, 'start_time': datetime.datetime.now()}
         flash('Cashout backtest started — refreshing when it finishes. '
@@ -3139,6 +3233,194 @@ def landing():
         if bets_dir:
             sport_summaries[sport['slug']] = compute_sport_summary(bets_dir)['totals']
     return render_template('landing.html', sport_summaries=sport_summaries)
+
+
+# --- Actions page: every sport's pipelines in one place --------------------
+# Each form posts to the sport's EXISTING trigger route (no duplicated launch
+# logic) with a hidden `next=/actions`; `_honour_next` below rewrites that
+# route's redirect so the user lands back here, with its flash messages.
+#
+# `status` is the /status key, `date` the default the script uses when the
+# field is left blank ('tomorrow' / 'yesterday'; None = takes no date),
+# `log` the file under logs/ the route writes.
+PIPELINE_ACTIONS = {
+    'football': [
+        {'label': 'Predict', 'icon': '🔮', 'url': '/football/predict', 'status': 'predict',
+         'stop': '/stop/predict', 'date': 'tomorrow', 'force': True, 'log': 'predict.log',
+         'hint': 'Scrape the slate, refresh stale inputs, predict.'},
+        {'label': 'Verify', 'icon': '✅', 'url': '/football/verify', 'status': 'verify',
+         'stop': '/stop/verify', 'date': 'yesterday', 'log': 'verify.log',
+         'hint': 'Scrape results, settle bet slips.'},
+        {'label': 'Update results data', 'icon': '📥', 'url': '/football/update_data', 'status': 'update',
+         'stop': '/stop/update', 'date': None, 'log': 'update_data.log',
+         'hint': 'Download MatchHistory CSVs from football-data.co.uk.'},
+        {'label': 'Update standings', 'icon': '📊', 'url': '/football/update_leagues', 'status': 'leagues',
+         'stop': '/stop/leagues', 'date': None, 'log': 'leagues.log',
+         'hint': 'Crawl league tables + form (~17 min).'},
+        {'label': 'Retrain', 'icon': '🔄', 'url': '/football/retrain_model', 'status': 'retrain',
+         'stop': '/stop/retrain', 'date': None, 'log': 'retrain.log', 'confirm': True,
+         'hint': 'Full pipeline: data → standings → train → calibrate (~20–30 min).'},
+    ],
+    'euroleague': [
+        {'label': 'Predict', 'icon': '🔮', 'url': '/euroleague/predict', 'status': 'euroleague_predict',
+         'stop': '/euroleague/stop/predict', 'date': 'tomorrow', 'log': 'euroleague_predict.log',
+         'hint': 'Fixtures + odds, predict.'},
+        {'label': 'Verify', 'icon': '✅', 'url': '/euroleague/verify', 'status': 'euroleague_verify',
+         'stop': '/euroleague/stop/verify', 'date': 'yesterday', 'log': 'euroleague_verify.log',
+         'hint': 'Results, settle bet slips.'},
+        {'label': 'Retrain', 'icon': '🔄', 'url': '/euroleague/retrain', 'status': 'euroleague_retrain',
+         'stop': '/euroleague/stop/retrain', 'date': None, 'log': 'euroleague_retrain.log', 'confirm': True,
+         'hint': 'Full retrain pipeline.'},
+    ],
+    'nba': [
+        {'label': 'Predict', 'icon': '🔮', 'url': '/nba/predict', 'status': 'nba_predict',
+         'stop': '/nba/stop/predict', 'date': 'tomorrow', 'log': 'nba_predict.log',
+         'hint': 'Fixtures + ESPN odds, predict.'},
+        {'label': 'Verify', 'icon': '✅', 'url': '/nba/verify', 'status': 'nba_verify',
+         'stop': '/nba/stop/verify', 'date': 'yesterday', 'log': 'nba_verify.log',
+         'hint': 'Results, settle bet slips.'},
+        {'label': 'Retrain', 'icon': '🔄', 'url': '/nba/retrain', 'status': 'nba_retrain',
+         'stop': '/nba/stop/retrain', 'date': None, 'log': 'nba_retrain.log', 'confirm': True,
+         'hint': 'Full retrain pipeline.'},
+    ],
+}
+
+
+@app.after_request
+def _honour_next(response):
+    """Send a POST back to a local `next` page instead of the route's own
+    hard-coded dashboard redirect. Only same-site paths are honoured."""
+    if request.method == 'POST' and response.status_code in (301, 302, 303):
+        nxt = request.form.get('next', '')
+        if nxt.startswith('/') and not nxt.startswith('//'):
+            response.headers['Location'] = nxt
+    return response
+
+
+# Where each sport leaves its per-date artifacts, for the Actions page's
+# day-status grid. `run` is the file a prediction run writes even when it finds
+# nothing to predict (the scrape / fixtures step), so "ran but empty" can be
+# told apart from "never ran". Paths are relative to PROJECT_ROOT.
+_DAY_STATUS_PATHS = {
+    'football':   {'dir': 'output', 'pred': 'predictions_{d}.csv',
+                   'run': 'output/matches_{d}.json', 'view': '/football/view/{f}',
+                   'verif': 'verification_{d}.csv'},
+    'euroleague': {'dir': 'output_euroleague', 'pred': 'predictions_euroleague_{d}.csv',
+                   'run': 'data_sets/Euroleague/fixtures_{d}.json', 'view': '/euroleague/view/{f}',
+                   'verif': 'verification_euroleague_{d}.csv'},
+    # NBA has no predictions view page yet, so its P badges stay unlinked.
+    'nba':        {'dir': 'output_basketball', 'pred': 'predictions_nba_{d}.csv',
+                   'run': 'data_sets/NBA/fixtures_{d}.json', 'view': None,
+                   'verif': 'verification_nba_{d}.csv'},
+}
+
+
+def _dated_files(directory, pattern):
+    """Active + archived (history/) copies of a per-date file. Archiving only
+    hides a file from the lists; for "did this happen" it still counts. Old
+    archive collisions carry a `.<ts>` suffix before the extension."""
+    base, ext = os.path.splitext(pattern)
+    out = []
+    for d in (directory, os.path.join(directory, 'history')):
+        out += glob.glob(os.path.join(d, pattern))
+        out += glob.glob(os.path.join(d, f'{base}.*{ext}'))
+    return out
+
+
+def _day_status(slug, date_str):
+    """One cell of the grid: {'code': 'B'|'P'|'p'|'', 'title': tooltip,
+    'verified': bool}. B = a slip with at least one non-VOID bet; P =
+    predictions with rows; p (shown as N/A) = a prediction run happened but
+    produced no rows; '' = nothing. `verified` = a verification CSV exists for the date."""
+    cfg = _DAY_STATUS_PATHS.get(slug)
+    if not cfg:
+        return {'code': '', 'title': '', 'verified': False}
+    out_dir = os.path.join(PROJECT_ROOT, cfg['dir'])
+    cell = _day_status_code(cfg, out_dir, slug, date_str)
+    cell['verified'] = bool(_dated_files(out_dir, cfg['verif'].format(d=date_str)))
+    if cell['verified']:
+        cell['title'] += ' · verified'
+    return cell
+
+
+def _day_status_code(cfg, out_dir, slug, date_str):
+
+    n_bets = 0
+    for path in _dated_files(out_dir, f'bets_{date_str}.json'):
+        try:
+            with open(path) as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            continue
+        bets = data if isinstance(data, list) else data.get('bets', [])
+        n_bets += sum(1 for b in bets if str(b.get('status', '')).upper() != 'VOID')
+
+    n_pred, pred_file = 0, False
+    for path in _dated_files(out_dir, cfg['pred'].format(d=date_str)):
+        pred_file = True
+        try:
+            with open(path) as f:
+                n_pred = max(n_pred, sum(1 for line in f if line.strip()) - 1)
+        except OSError:
+            pass
+    ran = pred_file or os.path.exists(os.path.join(PROJECT_ROOT, cfg['run'].format(d=date_str)))
+
+    # Links only to ACTIVE files: the betting page lists active slips and the
+    # view routes read only the output dir, so an archived target would 404.
+    pred_name = cfg['pred'].format(d=date_str)
+    pred_url = (cfg['view'].format(f=pred_name)
+                if cfg['view'] and os.path.exists(os.path.join(out_dir, pred_name)) else None)
+    slip_url = (f'/betting?tab={slug}#slip-{slug}-{date_str}'
+                if os.path.exists(os.path.join(out_dir, f'bets_{date_str}.json')) else None)
+
+    if n_bets:
+        return {'code': 'B', 'title': f'{n_bets} bet(s) placed · {n_pred} prediction(s)',
+                'url': slip_url}
+    if n_pred > 0:
+        return {'code': 'P', 'title': f'{n_pred} prediction(s), no bets yet', 'url': pred_url}
+    if ran:
+        return {'code': 'p', 'title': 'Prediction ran but produced no predictions'}
+    return {'code': '', 'title': 'Nothing run yet'}
+
+
+# A day drops off the grid once these sports are all verified (a sport with
+# nothing run that day has nothing to verify, so it doesn't hold the day open).
+_DAY_GRID_DONE_SPORTS = ('football', 'euroleague')
+
+
+def _day_fully_verified(cells):
+    tracked = [cells[s] for s in _DAY_GRID_DONE_SPORTS if s in cells]
+    return (any(c['verified'] for c in tracked)
+            and all(c['verified'] or not c['code'] for c in tracked))
+
+
+def _day_status_grid(days=5, lookback=7):
+    """Columns from `lookback` days ago through `days - 1` days ahead. Past
+    days only appear while something on them is still awaiting verification;
+    any day whose football + euroleague work is verified is hidden."""
+    today = datetime.date.today()
+    sports = [s for s in SPORTS if s.get('active')]
+    rows = []
+    for i in range(-lookback, days):
+        d = today + datetime.timedelta(days=i)
+        ds = d.isoformat()
+        cells = {s['slug']: _day_status(s['slug'], ds) for s in sports}
+        if _day_fully_verified(cells):
+            continue
+        if i < 0 and not any(c['code'] or c['verified'] for c in cells.values()):
+            continue
+        rows.append({'date': ds, 'label': f'{d.day}/{d.month}',
+                     'today': i == 0, 'cells': cells})
+    return sports, rows
+
+
+@app.route('/actions')
+def actions():
+    sports = [dict(s, actions=PIPELINE_ACTIONS.get(s['slug'], []))
+              for s in SPORTS if s.get('active')]
+    grid_sports, grid_rows = _day_status_grid()
+    return render_template('actions.html', action_sports=sports,
+                           grid_sports=grid_sports, grid_rows=grid_rows)
 
 
 @app.route('/betting')

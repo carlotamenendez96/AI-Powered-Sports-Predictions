@@ -152,6 +152,9 @@ class StandingsSpider(scrapy.Spider):
         country = response.meta["country"]
         base_url = response.url
 
+        # finally closes the page even when overall never renders — without it
+        # a missing table leaked the Playwright page for the rest of the crawl
+        # (upstream 2026-09-27; same contract kept with goto/retry path below).
         try:
             await self._wait_for_table(page, label=f"{league} standings/overall")
             overall_data = await self.extract_table(page, "standings")

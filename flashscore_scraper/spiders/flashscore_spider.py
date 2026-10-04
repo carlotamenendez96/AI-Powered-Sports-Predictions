@@ -4,6 +4,13 @@ from flashscore_scraper.items import MatchItem
 from flashscore_scraper.items import MatchItem
 import json
 import datetime
+import os
+
+# Sidecar describing the last day-list crawl (see _write_scrape_stats). Relative
+# to the CWD, which is the repo root for every bin/ wrapper and manual invocation.
+SCRAPE_STATS_DIR = "logs"
+SCRAPE_STATS_FILE = "last_scrape_stats.json"
+
 
 class FlashscoreSpider(scrapy.Spider):
     name = "flashscore"
@@ -155,6 +162,30 @@ class FlashscoreSpider(scrapy.Spider):
         finally:
             await page.close()
 
+    def _write_scrape_stats(self, rows_on_page, in_target_leagues, kept):
+        """Drop a sidecar of what the day page actually held, so a caller can
+        tell an empty day from a broken scrape.
+
+        `bin/run_predictions.sh` deletes this file before crawling and reads it
+        after, so a stale file from another run is never consulted. Failing to
+        write it is non-fatal: the caller falls back to treating 0 items as a
+        failure, which is the old behaviour.
+        """
+        try:
+            os.makedirs(SCRAPE_STATS_DIR, exist_ok=True)
+            with open(os.path.join(SCRAPE_STATS_DIR, SCRAPE_STATS_FILE), 'w') as f:
+                json.dump({
+                    'rows_on_page': rows_on_page,
+                    'in_target_leagues': in_target_leagues,
+                    'kept': kept,
+                    'day_diff': self.day_diff,
+                    'mode': self.mode,
+                    'filtered': self.filter_leagues_enabled,
+                    'ts': datetime.datetime.now().isoformat(timespec='seconds'),
+                }, f, indent=2)
+        except Exception as e:
+            self.logger.warning(f"Could not write scrape stats sidecar: {e}")
+
     async def parse_match_list(self, response):
         page = response.meta["playwright_page"]
         
@@ -267,7 +298,13 @@ class FlashscoreSpider(scrapy.Spider):
         # 3. Extract Match IDs (and Leagues)
         content = await page.content()
         sel = scrapy.Selector(text=content)
-        
+
+        # Row count BEFORE any filtering. This is what separates "the day holds
+        # no fixtures we care about" from "the page never rendered" — the two
+        # cases the wrapper could not tell apart when all it saw was 0 items.
+        rows_on_page = len(sel.css("[id^='g_1_']"))
+        in_target_leagues = 0
+
         matches_to_scrape = []
         
         # Determine container - usually .sportName
@@ -321,6 +358,8 @@ class FlashscoreSpider(scrapy.Spider):
                     
                     if skip_league:
                         continue
+
+                    in_target_leagues += 1
                     
                     # Debug Filter: If debug_match is set, skip others
                     debug_id = getattr(self, 'debug_match', None)
@@ -399,6 +438,7 @@ class FlashscoreSpider(scrapy.Spider):
                     matches_to_scrape.append(item)
                     
         self.logger.info(f"Found {len(matches_to_scrape)} matches for next day.")
+        self._write_scrape_stats(rows_on_page, in_target_leagues, len(matches_to_scrape))
 
         # await page.close() # Let Playwright handler close it or do it after yielding if needed, but safer to let it be.
         

@@ -47,6 +47,19 @@ if ! python3 ml_project/euroleague/fetch_euroleague_daily.py fixtures --date "$T
     exit 1
 fi
 
+# 1b. Odds (Flashscore: moneyline + the full totals ladder, both competitions).
+# NON-FATAL by design: the predictor works without odds — it just leaves
+# Over Line / P(Over) blank and auto_wager builds an empty slip — so a
+# Flashscore DOM change should cost us the betting surface for a day, not the
+# predictions. Writes output_euroleague/euroleague_odds_<date>.json.
+echo ""
+echo "[*] Fetching odds (Flashscore, E + U) ..."
+if python3 ml_project/euroleague/fetch_euroleague_odds.py --date "$TARGET_DATE"; then
+    echo "[+] Odds fetched."
+else
+    echo "[!] Odds fetch failed (non-fatal) — predictions will have no line, slips will be empty."
+fi
+
 # 2. Predict (corpus-derived features + per-competition Platt).
 echo ""
 echo "[*] Running predictor ..."
