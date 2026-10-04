@@ -90,8 +90,9 @@ buscar un dump externo). No asumir un CSV mágico el día 1: el histórico se
 | Adjuster 1X2 por bajas | No hecho (shelved N3) | No priorizar hasta medir |
 | Árbitro del partido | **Cableado en `run_predictions.sh` (paso no fatal)** | `scripts/d4_referees/extract_referees.py` → `output/referees_<date>.json` |
 | Histórico árbitros (tarjetas…) | **Hecho (2026-09-21) — capa de datos** | `scripts/referees/build_referee_history.py` → `data_sets/referees/{referee_matches.csv,referees.json}`. Ver Paso 4. |
-| Modelo / mercado tarjetas | **Hecho (2026-09-21) — pipeline aislado, serve ON** | Fase E / Paso 6. Head binario `P(HY+AY > 3.5)` en `ml_project/cards/`. Gate OOF pasó. Serve activo en `run_predictions.sh` (`CARDS_ENABLED=0` para saltar). Sin lanes/stakes. |
-| Modelo / mercado córners | No existe | Fase F |
+| Modelo / mercado tarjetas | **Hecho (2026-09-21) — pipeline aislado, serve ON** | Fase E / Paso 6. Head binario `P(HY+AY > 3.5)` en `ml_project/cards/`. Gate OOF pasó. Serve activo. Cuotas reales vía **Winamax** (`winamax_odds`, no Flashscore). **Siguiente precisión:** Paso 6b — bajas/sancionados (post §4.1), derbis, presión clasificatoria (info que el prior no ve); no más ventanas L15 de forma. |
+| Señales contextuales Cards (6b) | **Plan (2026-09-21) — no implementado** | Bajas pivotes duros / sancionados; derbis; presión de tabla. Flags + experiment con placebo. |
+| Modelo / mercado córners | No existe | Fase F — preferible tras al menos un experiment 6b PASS/FAIL |
 
 Las bajas se **extraen** a diario (Paso 1) y se **citan** en la justificación
 cuando son relevantes (Paso 2). El modelo 1X2/O/U **aún no** las usa en el pick
@@ -214,12 +215,50 @@ Cada paso tiene: **qué**, **por qué**, **entregable**, **criterio de listo**,
   histórico de esos árbitros solo puede crecer hacia delante, y sin
   tarjetas (ver limitación arriba).
 
-  Solo hay **una temporada (25-26)** de los ficheros con `Referee` en este
-  disco hoy — `bin/setup_data.sh` descarga por temporada y no se han traído
-  25-26 ni 23-24. Primer `--seed-from-matchhistory` (2026-09-21): **3.356
-  filas**, **172 árbitros distintos**. `--stats "E Duckworth"` (el más
-  frecuente, 37 partidos) devuelve 3.89 amarillas/partido, 16.2% de
-  partidos con roja, 8.95 córners/partido — tasas no triviales, no ceros.
+  Solo hay **tres temporadas (23-24 / 24-25 / 25-26)** de los ficheros con
+  `Referee` en disco tras el seed 2026-09-21: **10.085 filas**, **245**
+  árbitros. Las tasas de tarjetas siguen limitadas a ENG/SCO.
+
+* **Investigación — cómo cubrir ESP / FRA / ITA / GER / etc. (2026-09-21):**
+
+  | Fuente | Árbitro | HY/AY por partido | ¿Backfill Big-5? | Coste / riesgo |
+  | --- | --- | --- | --- | --- |
+  | football-data.co.uk CSV | Solo ENG(+SCO) | Sí en Big-5 | **No** (columna `Referee` ausente en SP1/I1/F1/D1 incluso 15/16→25/26; verificado en el zip crudo) | Ya integrado |
+  | Flashscore (nuestro spider) | Sí (Paso 3) | Sí en live/stats; **no** en `mode=verification` hoy | Solo forward | Playwright; ampliar verification a stats |
+  | **Sofascore API no oficial** | **Sí** (`event.referee`) | **Sí** (`/event/{id}/statistics` → Yellow/Red cards) | **Sí** (paginar `/unique-tournament/{id}/season/{sid}/events/last/{page}`) | `curl_cffi` (TLS); ToS/WAF; frágil |
+  | API-Football (api-sports.io) | Sí en fixture | Sí vía `/fixtures/events` o statistics | Sí (pagado) | Cuota $; estable; lo usa p.ej. RefOdds |
+
+  **Probe Sofascore PASS (2026-09-21, `curl_cffi` impersonate chrome120):**
+  - LaLiga `uniqueTournament=8`, Serie A `23`, Ligue 1 `34`, Bundesliga `35`
+  - Ejemplo LaLiga Elche–Real Sociedad: árbitro *Miguel Angel Ortiz Arias*
+    (id 786436, career 700 amarillas / 156 partidos) + stats partido HY=4 AY=1
+  - Perfil `/referee/{id}` trae agregados de carrera (útil como prior rápido;
+    para el modelo preferimos **filas partido a partido** con date-cut, igual
+    que ENG/SCO)
+
+  **Vía recomendada (orden):**
+
+  1. **Backfill Sofascore → `referee_matches.csv`** (`source=sofascore`) —
+     **implementado** `scripts/referees/seed_sofascore.py` (2026-09-21).
+     Big-5: `--all-big5 --years 23/24,24/25,25/26`. Schema actual; idempotente
+     `match_key=ss:<event_id>`. Requiere `curl_cffi` (en `requirements.txt`).
+     Nombres Sofascore → slug estilo Flashscore (`Surname I.`) best-effort.
+  2. **Alternativa limpia:** API-Football de pago si Sofascore se pone
+     hostil — mismo schema, `source=api_football`.
+  3. **Forward gratis (complemento):** en `mode=verification`, además del
+     marcador, scrapear panel stats (el spider live ya sabe
+     `extractStat('Yellow cards')`) y rellenar `hy/ay` en
+     `--append-verification`. Cierra el agujero “forward sin tarjetas” para
+     **todas** las ligas del slate diario, no solo Big-5.
+
+  **Join alternativo (si solo quisiéramos árbitro):** MatchHistory ya tiene
+  HY/AY en ESP/FRA/ITA — bastaría asignar `Referee` por fuzzy
+  fecha+equipos desde Sofascore. Preferible scrapear ambos del mismo evento
+  Sofascore para no desalinear conteos de tarjetas.
+
+  **Fuera de alcance inmediato:** Transfermarkt (ToS-hostile), FBref (sin
+  feed de árbitro fiable), depender del marketing de football-data (“referees
+  for major leagues”) — **no se cumple en los CSV**.
 
 * **Cómo sembrar 3 temporadas (ENG/SCO):**
 
@@ -384,7 +423,19 @@ Cada paso tiene: **qué**, **por qué**, **entregable**, **criterio de listo**,
   hay prior de liga + forma L5 de ambos equipos. El resto se **salta** (log),
   nunca se rellena. Hook en `run_predictions.sh` **ON** por defecto
   (`CARDS_ENABLED=0` para desactivar). `justify_predictions` añade una línea factual solo si existe
-  `predictions_cards_<date>.csv`. **Apuestas virtuales ON** (mismos carriles conviction/model, `type=Cards`, cuota sintética 1.90 — value OFF). Liquidación solo si hay HY+AY en el resultado; si no, la apuesta queda OPEN. Sin claim de edge vs book (no hay cuotas reales de tarjetas).
+  `predictions_cards_<date>.csv` y se **fusiona** en `predictions_<date>.csv`
+  (cluster Cards junto a 1X2/O/U; `auto_wager` lee el mismo CSV). Cuotas reales
+  cuando el scrape las rellene (`Over Cards Odd` / `Under Cards Odd`);
+  `allow_synthetic_fallback=false`. **Fuente de cuotas (2026-09-21):** Flashscore /
+  BetExplorer / OddsPortal **no publican** Number of Cards O/U; Pamestoixima
+  headless → Akamai *Access Denied*. **Winamax.es** sí: `PRELOADED_STATE` por
+  HTTPS (`betType` 2603, `specialBetValue=total=3.5`) — sin Playwright.
+  `python3 -m ml_project.cards.winamax_odds <date>` (hook en `run_predictions.sh`)
+  enlaza por nombre+fecha y escribe `over_cards_3_5` / `under_cards_3_5` +
+  `cards_odds_source=winamax`. Cobertura liga-dependiente (LATAM / divisiones
+  bajas a menudo; Big-5 lejanos a veces sin mercado). Nota: Winamax puntúa
+  amarilla=1 / roja=2; el modelo predice HY+AY.
+  Liquidación solo con HY+AY; si no, OPEN.
 
 * **Qué aún no puede funcionar:** ligas extra sin HY/AY; tasas de árbitro
   fuera de ENG/SCO (catálogo forward sin box-score); features de
@@ -392,8 +443,54 @@ Cada paso tiene: **qué**, **por qué**, **entregable**, **criterio de listo**,
   de árbitro, no al resto.
 
 * **Listo cuando:** gate PASS + serve smoke sin crash + docs. **Cumplido
-  2026-09-21.** Siguiente: Paso 7 (córners) o acumular forward box-score;
-  no activar apuestas reales sobre tarjetas sin odds + estudio ROI.
+  2026-09-21.** Cuotas reales: plumbing listo (spider + CSV + auto_wager);
+  Flashscore odds-comparison **no** publica Number of Cards O/U (probe FAIL);
+  fuente **Winamax** locked (probe PASS 5/40, 2026-09-21); cobertura parcial
+  por liga. No claim de edge Cards sin settled + Spearman EV.
+
+* **Siguiente — precisión Cards (prioridad explícita, 2026-09-21):** el gancho
+  OOF sobre el prior de liga es pequeño (−0.0016 Brier). Lo que falta no es
+  más forma L5→L15 (misma lección que 1X2: el mercado/prior ya ve resultados
+  pasados), sino **información que el prior no ve**:
+
+  1. **Bajas / sancionados con impacto en tarjetas** — pivotes duros,
+     mediocentros de falta, jugadores a 1 amarilla de sanción, ya
+     suspendidos. Fuente: `availability_<date>.json` (`reason_class` ∈
+     `{suspension, injury, …}`). **Solo después** del gate §4.1 (calidad del
+     scrape). En Cards el canal natural es feature/adjuster **del head de
+     tarjetas** (no el adjuster 1X2 Paso 8). Importancia ≠ SoFIFA OVR (ya
+     rechazado en D4); hace falta proxy de “perfil de tarjeta” (faltas /
+     amarillas/partido del ausente), no rating de calidad.
+  2. **Derbis / rivalidades** — flag por pareja o liga (H2H local, misma
+     ciudad, clasico-list). Señal de intensidad arbitral / falta que el
+     rolling form no captura en un solo partido.
+  3. **Presión clasificatoria** — contexto de jornada: pelea por título /
+     Europa / descenso / nada en juego (derivable de standings + jornada
+     restante). Motiva agresividad o “partido muerto”.
+
+  Gates de aceptación (mismo espíritu que `experiment_cards.py`):
+  - A/B OOF o forward con **placebo** de mismo ancho (no confiar en gain-share).
+  - Brier/logloss vs `league_mean` + brazo sin la feature nueva.
+  - **No** alargar ventanas de forma de tarjetas como primer lever.
+  - En paralelo (no sustituye lo anterior): alinear target↔cuota Winamax
+    (booking points vs HY+AY) y acumular árbitro forward fuera de ENG/SCO.
+
+  Orden sugerido tras §4.1 abierto: (1) suspensiones/pivotes → (2) derbis →
+  (3) presión de tabla. Paso 7 (córners) puede esperar a que (1)–(2) tengan
+  al menos un experiment PASS/FAIL documentado.
+
+### Paso 6b — Señales contextuales Cards (plan; no implementado)
+
+* **Qué:** Features / adjuster capped solo en `ml_project/cards/`, detrás de
+  flags (`use_availability_at_serve`, futuros `use_derby`, `use_table_pressure`).
+* **Por qué:** Única vía razonable a precisión incremental una vez el head
+  ya bate al prior por poco; el gap es información de contexto del partido,
+  no resolución de form.
+* **Precondición:** gate §4.1 para el brazo de bajas; derbis/presión pueden
+  prototiparse antes (datos ya en standings / calendar) pero con el mismo
+  gate experimental.
+* **Listo cuando:** experiment Cards con placebo PASS y, si hay cuotas,
+  Spearman EV en settled no peor que el brazo base (idealmente mejor).
 
 ### Paso 7 — Mercado córners (Fase F)
 
@@ -566,9 +663,13 @@ python3 scripts/experiment_cards.py
 * Meter bajas en el **modelo / adjuster** antes de pasar el gate §4.1.
 * Meter “noticias” genéricas / NLP de periódicos sin schema fijo.
 * Reentrenar 1X2 cada día esperando milagros.
+* Alargar ventanas de forma de tarjetas (L10→L15…) como primer lever de
+  precisión Cards — el prior ya ve esos resultados; priorizar Paso 6b.
 * Construir modelo de córners **antes** de tener alineaciones + (para
-  tarjetas) histórico de árbitro.
-* Confiar en SoFIFA OVR como impacto de baja (ya rechazado en D4).
+  tarjetas) histórico de árbitro **y** al menos un experiment 6b
+  documentado (PASS o FAIL con placebo).
+* Confiar en SoFIFA OVR como impacto de baja (ya rechazado en D4) — tampoco
+  como proxy de “perfil de tarjeta” del ausente.
 * Activar apuestas reales sobre tarjetas/córners sin validación forward.
 
 ---
@@ -577,11 +678,13 @@ python3 scripts/experiment_cards.py
 
 1. Cada día hay `availability_*.json` y (luego) `referees_*.json`.
 2. La 1ª semana de bajas cumple el gate §4.1 **antes** de cualquier
-   adjuster 1X2.
+   adjuster 1X2 **o** brazo de bajas en Cards (Paso 6b.1).
 3. El histórico de árbitros **crece** con cada verification.
 4. Las justificaciones citan **solo** hechos presentes en esos JSON.
 5. Cualquier mercado nuevo tiene baseline y métrica antes de UI/Telegram
    tipster.
+6. Precisión Cards: experiment 6b (bajas / derbis / presión) con placebo
+   antes de reivindicar mejora; no L15 de forma como atajo.
 
 ---
 
@@ -591,15 +694,25 @@ python3 scripts/experiment_cards.py
 diaria (`run_predictions` → availability → referees → `justify_predictions`).
 Pasos 3–6 (árbitro + histórico + texto + **mercado tarjetas**) ya están
 hechos; el histórico de árbitros crece solo en cada `run_verification.sh`.
-Tarjetas: reentrenar semanal aparte; activar serve solo con
-`CARDS_ENABLED=1` tras revisar el último `output/experiments/cards_*`.
+Tarjetas: reentrenar semanal aparte; serve ON por defecto
+(`CARDS_ENABLED=0` para apagar). **Tras §4.1:** Paso **6b** (señales que el
+prior no ve: sancionados/pivotes → derbis → presión de tabla) antes que
+Paso 7 (córners).
 
-Opcional: sembrar más temporadas ENG/SCO (`bin/setup_data.sh 2324` /
-`2425`) para densificar tasas de árbitro; Paso 7 (córners) cuando quieras
-otro mercado aislado.
+Opcional en paralelo: **backfill Big-5 Sofascore** (ya implementado)::
 
-**No** implementar Paso 8 (adjuster) hasta gate §4.1 abierto.
-**No** añadir stakes/lanes de tarjetas sin cuotas + estudio ROI.
+  ```bash
+  pip install curl_cffi   # si falta
+  python3 scripts/referees/seed_sofascore.py --all-big5 --years 23/24,24/25,25/26
+  # log de una corrida larga: logs/seed_sofascore.log
+  ```
+
+  Luego alinear target Cards↔booking points Winamax.
+
+**No** implementar Paso 8 (adjuster 1X2) hasta gate §4.1 abierto.
+**No** alargar L15 de forma de tarjetas como siguiente experimento.
+**No** añadir stakes/lanes de tarjetas sin cuotas + estudio ROI settled.
 
 Frase de arranque para el agente: *“Ayúdame a rellenar / automatizar el
-checklist §4.1 del roadmap”* — o *“Implementa el Paso 7 del roadmap…”*.
+checklist §4.1 del roadmap”* — o *“Implementa el Paso 6b.1 (sancionados /
+pivotes) del roadmap de tarjetas…”*.

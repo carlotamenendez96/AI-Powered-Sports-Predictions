@@ -14,7 +14,8 @@ _DEFAULT_PATH = "data_sets/betting_config.json"
 
 _BOOL_KEYS = (
     "enabled", "use_calibration", "use_availability_at_serve",
-    "include_in_betting", "bet_value", "bet_conviction", "bet_model",
+    "include_in_betting", "allow_synthetic_fallback",
+    "bet_value", "bet_conviction", "bet_model",
 )
 _FLOAT_KEYS = ("synthetic_odd", "min_confidence")
 

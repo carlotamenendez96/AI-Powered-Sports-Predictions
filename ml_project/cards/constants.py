@@ -58,8 +58,9 @@ CARD_FORM_BLOCK = (
 )
 
 # Serve-time + virtual-betting config (isolated from sports_config LANES).
-# Cards has no book odds in the scraper yet — betting uses synthetic_odd for
-# conviction/model sizing only. Value lane is skipped until real odds exist.
+# Prefer real bookmaker cards O/U 3.5 when present (Winamax enrich →
+# cards_odds_source=winamax; Flashscore spider leaves empty today).
+# synthetic_odd is legacy and only used if allow_synthetic_fallback is true.
 CARDS_CONFIG_DEFAULTS = {
     "enabled": True,
     "use_calibration": True,
@@ -67,10 +68,11 @@ CARDS_CONFIG_DEFAULTS = {
     "use_availability_at_serve": False,
     # Virtual betting (same three bankroll lanes; type="Cards")
     "include_in_betting": True,
-    "synthetic_odd": 1.90,
+    "synthetic_odd": 1.90,  # legacy; unused when allow_synthetic_fallback=false
+    "allow_synthetic_fallback": False,
     "min_confidence": 0.55,
-    # Value needs real EV/odds — do not invent edge with a flat synthetic price.
-    "bet_value": False,
+    # Value only fires when a real odd is present and EV>0.
+    "bet_value": True,
     "bet_conviction": True,
     "bet_model": True,
 }

@@ -84,6 +84,17 @@ def _canonical_league(flashscore_name: str) -> Optional[str]:
     return _FLASHSCORE_TO_CARDS_LEAGUE.get(name)
 
 
+def _parse_odd(raw) -> Optional[float]:
+    """Return decimal odd > 1.0, else None (missing / garbage)."""
+    if raw is None or raw == "":
+        return None
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return v if v > 1.0 else None
+
+
 class CardsPredictor:
     def __init__(self, history_dir: str = "data_sets/MatchHistory",
                  models_dir: str = "models"):
@@ -206,6 +217,26 @@ class CardsPredictor:
             pick = "Over 3.5" if p_cal >= 0.5 else "Under 3.5"
             conf = p_cal if p_cal >= 0.5 else 1.0 - p_cal
 
+            over_odd = _parse_odd(m.get("over_cards_3_5"))
+            under_odd = _parse_odd(m.get("under_cards_3_5"))
+            pick_odd = over_odd if pick.startswith("Over") else under_odd
+            # Prefer explicit source from enrich step (winamax); else flashscore
+            # if the spider filled the fields.
+            tagged = str(m.get("cards_odds_source") or "").strip().lower()
+            if pick_odd is None:
+                # If only the other side published, still record both columns;
+                # pick odd / EV stay empty.
+                if over_odd or under_odd:
+                    odds_source = tagged or "flashscore"
+                else:
+                    odds_source = ""
+                ev_cards = ""
+                pred_odd = ""
+            else:
+                odds_source = tagged or "flashscore"
+                ev_cards = f"{conf * pick_odd - 1.0:.4f}"
+                pred_odd = f"{pick_odd:.3f}"
+
             rows.append({
                 "Date": date_obj.strftime("%Y-%m-%d %H:%M")
                 if hasattr(date_obj, "strftime") else str(date_obj),
@@ -219,6 +250,11 @@ class CardsPredictor:
                 "Under %": f"{1.0 - p_cal:.2f}",
                 "Over % (raw)": f"{p_raw:.2f}",
                 "Under % (raw)": f"{1.0 - p_raw:.2f}",
+                "Over Odd": f"{over_odd:.3f}" if over_odd else "",
+                "Under Odd": f"{under_odd:.3f}" if under_odd else "",
+                "Prediction Cards Odd": pred_odd,
+                "EV Cards": ev_cards,
+                "Odds Source": odds_source,
                 "Cal Source": cal_src or "",
                 "Referee": ref_name or "",
                 "n_ref": int(feats.get("ref_n_with_cards") or 0),

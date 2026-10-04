@@ -667,7 +667,62 @@ class FlashscoreSpider(scrapy.Spider):
             
             if not found_odds:
                  self.logger.warning(f"O/U 2.5 row not found for {item['match_id']}")
-                
+
+            # --- 5. CARDS O/U 3.5 — non-fatal; Flashscore usually empty ---
+            # Locked URL/DOM: scripts/cards/probe_cards_odds.py (2026-09-21 FAIL).
+            # Real odds come from Winamax enrich
+            # (`python3 -m ml_project.cards.winamax_odds`, hooked in
+            # run_predictions.sh) which writes these fields + cards_odds_source.
+            item.setdefault('over_cards_3_5', None)
+            item.setdefault('under_cards_3_5', None)
+            item.setdefault('cards_odds_source', None)
+            try:
+                cards_base = item.get('base_url') or ''
+                cards_base = cards_base.split('#')[0].split('?')[0].rstrip('/')
+                if cards_base and item.get('match_id'):
+                    cards_url = (
+                        f"{cards_base}/odds/over-under/number-of-cards/"
+                        f"full-time/?mid={item['match_id']}"
+                    )
+                    await page.goto(
+                        cards_url, timeout=20000, wait_until='domcontentloaded')
+                    try:
+                        await page.wait_for_selector('.ui-table', timeout=4000)
+                    except Exception:
+                        pass
+                    cards_rows = page.locator('.ui-table__row')
+                    cards_count = await cards_rows.count()
+                    found_cards = False
+                    for i in range(cards_count):
+                        ctext = (await cards_rows.nth(i).inner_text()).replace(
+                            "\n", " ").strip()
+                        if not re.search(r'(?:^|[^\d])3\.5(?:[^\d]|$)', ctext):
+                            continue
+                        cnums = re.findall(r'\d+\.\d+', ctext)
+                        if len(cnums) >= 3:
+                            item['over_cards_3_5'] = cnums[1]
+                            item['under_cards_3_5'] = cnums[2]
+                            found_cards = True
+                        elif len(cnums) == 2:
+                            item['over_cards_3_5'] = cnums[0]
+                            item['under_cards_3_5'] = cnums[1]
+                            found_cards = True
+                        if found_cards:
+                            self.logger.info(
+                                f"Cards O/U 3.5 Found: "
+                                f"{item['over_cards_3_5']} / "
+                                f"{item['under_cards_3_5']} "
+                                f"(Row: {ctext[:50]}...)")
+                            break
+                    if not found_cards:
+                        self.logger.warning(
+                            f"Cards O/U 3.5 row not found for "
+                            f"{item['match_id']}")
+            except Exception as e:
+                self.logger.warning(
+                    f"Cards O/U 3.5 scrape skipped for "
+                    f"{item.get('match_id')}: {e}")
+
         except Exception as e:
              pass
         finally:

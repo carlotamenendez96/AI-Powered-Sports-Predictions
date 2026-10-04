@@ -131,10 +131,14 @@ if [ "$NEED_SCRAPE" == "true" ]; then
         elif [ "$SCRAPED_COUNT" -lt 0 ]; then
             echo "[-] Scraper Failed: $OUTPUT_JSON is missing or not valid JSON."
         else
-            echo "[-] Scraper Failed: 0 matches scraped."
-            echo "    Either no target-league fixtures exist for $DATE, or the scrape broke."
-            echo "    Check logs/pipeline_output.log — a missing Playwright browser"
-            echo "    (after a playwright upgrade) is the usual cause; fix with:"
+            # Exit 0 + empty [] is usually a quiet day (no fixtures in
+            # data_sets/target_leagues.json), not a broken browser. Lead with
+            # that; Playwright is only a fallback if you expected matches.
+            echo "[-] No matches for $DATE in target leagues (0 scraped)."
+            echo "    Most likely: no fixtures that day for the leagues we track."
+            echo "    If you expected matches, check logs/pipeline_output.log —"
+            echo "    a broken scrape (e.g. missing Playwright after an upgrade)"
+            echo "    can also leave an empty file; fix with:"
             echo "        source venv/bin/activate && playwright install chromium"
         fi
         echo "[$end_date] Status: Failed | Matches: $SCRAPED_COUNT | Start: $start_date | End: $end_date | Duration: ${duration}s" >> logs/scraper_status.log
@@ -194,11 +198,21 @@ python3 scripts/d4_referees/extract_referees.py "$DATE" \
 
 # 7. Cards market (Paso 6 / Fase E) — isolated head; ON by default after gate.
 # Skip with CARDS_ENABLED=0. Non-fatal; never touches 1X2 / O/U picks or bankrolls.
+# 7a. Winamax cards O/U 3.5 odds (Flashscore has no market; Pamestoixima
+#     Akamai-blocked headless). Plain HTTPS PRELOADED_STATE — no Playwright.
+#     Patches matches_$DATE.json in place when a fixture links + market exists.
 if [ "${CARDS_ENABLED:-1}" != "0" ]; then
+    echo ""
+    echo "[*] Enriching cards O/U 3.5 odds from Winamax for $DATE..."
+    python3 -m ml_project.cards.winamax_odds "$DATE" \
+        && echo "[+] Winamax cards-odds enrich complete." \
+        || echo "[!] Winamax cards-odds enrich failed (non-fatal); predict continues."
+
     echo ""
     echo "[*] Running cards predictions for $DATE..."
     python3 -m ml_project.cards.predict_cards "$DATE" \
-        && echo "[+] Cards prediction complete." \
+        && python3 -m ml_project.cards.merge_into_predictions "$DATE" \
+        && echo "[+] Cards prediction + merge into predictions_$DATE.csv complete." \
         || echo "[!] Cards prediction failed (non-fatal); 1X2/O/U intact."
 fi
 

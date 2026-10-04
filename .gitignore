@@ -47,5 +47,8 @@ __pycache__/
 # seleniumbase / soccerdata browser byproducts (D4 injury probes)
 downloaded_files/
 
+# Local Playwright browser path override (arm64 symlink workaround)
+.playwright-browsers/
+
 # national-teams generated corpus (regenerable via build_dataset.py) + raw cache
 data_sets/national_teams/*.csv

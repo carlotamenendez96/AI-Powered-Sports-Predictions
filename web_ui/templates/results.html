@@ -69,7 +69,7 @@
                 {% endif %}
                 {% endif %}
 
-                {% if col in ['Kelly 1X2', 'Kelly O/U'] %}
+                {% if col in ['Kelly 1X2', 'Kelly O/U', 'Kelly Cards'] %}
                 {% if val and val != "0.00%" and val != "0.0%" %}
                 {% set bg_class = "table-warning fw-bold text-dark" %}
                 {% endif %}
@@ -83,6 +83,12 @@
                 {% set bg_class = "table-success fw-bold" %}
                 {% endif %}
                 {% if col == 'Prediction O/U Odd' and row.get('Conf O/U')|to_float >= 0.55 %}
+                {% set bg_class = "table-success" %}
+                {% endif %}
+                {% if col == 'Prediction Cards' and row.get('Conf Cards')|to_float >= 0.55 %}
+                {% set bg_class = "table-success fw-bold" %}
+                {% endif %}
+                {% if col == 'Prediction Cards Odd' and row.get('Conf Cards')|to_float >= 0.55 %}
                 {% set bg_class = "table-success" %}
                 {% endif %}
 

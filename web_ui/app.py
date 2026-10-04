@@ -1811,6 +1811,9 @@ def view_file(filename):
             
             'Prediction O/U', 'Prediction O/U Odd', 'Conf O/U', 'EV O/U', 'Kelly O/U', 'Over %', 'Under %',
             'Pred O/U', 'Actual O/U', 'Correct O/U Label', # Verification variants
+
+            'Prediction Cards', 'Prediction Cards Odd', 'Conf Cards', 'EV Cards', 'Kelly Cards',
+            'Over Cards %', 'Under Cards %', 'Over Cards Odd', 'Under Cards Odd',
         ]
         
         final_cols = []
@@ -2663,77 +2666,159 @@ def auto_wager():
             return bet
 
         value_bets, conviction_bets, model_bets = [], [], []
-        for _, row in df.iterrows():
-            for bet_type, sel, odd, conf, ev, kelly in [
-                ('1X2', 'Prediction 1X2', 'Prediction 1X2 Odd', 'Conf 1X2', 'EV 1X2', 'Kelly 1X2'),
-                ('O/U', 'Prediction O/U', 'Prediction O/U Odd', 'Conf O/U', 'EV O/U', 'Kelly O/U'),
-            ]:
-                vb = build_value_bet(row, bet_type, sel, odd, conf, ev, kelly)
-                if vb: value_bets.append(vb)
-                cb = build_conviction_bet(row, bet_type, sel, odd, conf, ev, kelly)
-                if cb: conviction_bets.append(cb)
-                mb = build_model_bet(row, bet_type, sel, odd, conf, ev, kelly)
-                if mb: model_bets.append(mb)
-
-        # --- Cards market (Paso 6): join predictions_cards_<date>.csv ---
-        # No book odds in the scraper → synthetic_odd for conviction/model only.
-        # Value lane skipped by default (would invent EV). Settlement needs
-        # yellow-card totals; until then Cards bets stay OPEN (see resolve_daily_bets).
         try:
             from ml_project.cards.config import get_cards_config
             cards_cfg = get_cards_config()
         except Exception:
             cards_cfg = {}
-        cards_date = os.path.basename(latest_file).replace('predictions_', '').replace('.csv', '')
-        cards_path = os.path.join(OUTPUT_DIR, f'predictions_cards_{cards_date}.csv')
-        if (cards_cfg.get('include_in_betting') and cards_cfg.get('enabled')
-                and os.path.isfile(cards_path)):
-            try:
-                cdf = pd.read_csv(cards_path)
-            except Exception as e:
-                print(f"[auto_wager] Could not read {cards_path}: {e}")
-                cdf = None
-            if cdf is not None and not cdf.empty:
-                synth = float(cards_cfg.get('synthetic_odd') or 1.90)
-                cards_min_conf = float(cards_cfg.get('min_confidence') or 0.55)
-                # Temporarily lower conviction floor for cards if needed — use
-                # the stricter of lane floor and cards min_conf for conviction.
-                for _, crow in cdf.iterrows():
-                    conf = _to_float(crow.get('Conf Cards', 0))
+
+        # 1X2 + O/U always; Cards as a third market from the SAME predictions CSV
+        # once merged (Prediction Cards*). Falls back to predictions_cards_*.csv
+        # column names if merge hasn't run yet.
+        markets = [
+            ('1X2', 'Prediction 1X2', 'Prediction 1X2 Odd', 'Conf 1X2', 'EV 1X2', 'Kelly 1X2'),
+            ('O/U', 'Prediction O/U', 'Prediction O/U Odd', 'Conf O/U', 'EV O/U', 'Kelly O/U'),
+        ]
+        cards_enabled = bool(cards_cfg.get('include_in_betting') and cards_cfg.get('enabled'))
+        has_cards_cols = (
+            'Prediction Cards' in df.columns and 'Conf Cards' in df.columns
+        )
+        if cards_enabled and has_cards_cols:
+            markets.append(
+                ('Cards', 'Prediction Cards', 'Prediction Cards Odd',
+                 'Conf Cards', 'EV Cards', 'Kelly Cards')
+            )
+
+        allow_synth = bool(cards_cfg.get('allow_synthetic_fallback'))
+        synth = float(cards_cfg.get('synthetic_odd') or 1.90)
+        cards_min_conf = float(cards_cfg.get('min_confidence') or 0.55)
+
+        for _, row in df.iterrows():
+            for bet_type, sel, odd_col, conf_col, ev_col, kelly_col in markets:
+                if bet_type == 'Cards':
+                    conf = _to_float(row.get(conf_col, 0))
                     if conf < cards_min_conf:
                         continue
-                    # Build a row-shaped dict compatible with _common_fields.
-                    crow = crow.copy()
-                    crow['Prediction Cards'] = crow.get('Prediction Cards', '')
-                    crow['Cards Odd'] = synth
-                    crow['Conf Cards'] = conf
-                    crow['EV Cards'] = conf * synth - 1.0
-                    crow['Kelly Cards'] = '0%'
-                    # Align team/league columns if absent (cards CSV has them).
-                    if 'Home Team' not in crow.index and 'home' in crow.index:
-                        crow['Home Team'] = crow['home']
-                    if 'Away Team' not in crow.index and 'away' in crow.index:
-                        crow['Away Team'] = crow['away']
-                    cols = ('Cards', 'Prediction Cards', 'Cards Odd',
-                            'Conf Cards', 'EV Cards', 'Kelly Cards')
-                    if cards_cfg.get('bet_value'):
+                    # Prefer Prediction Cards Odd; else Over/Under Cards Odd by pick.
+                    odd = _to_float(row.get(odd_col, 0))
+                    if odd <= 1.0:
+                        pick = str(row.get(sel, '') or '')
+                        if pick.lower().startswith('over'):
+                            odd = _to_float(row.get('Over Cards Odd', row.get('Over Odd', 0)))
+                        elif pick.lower().startswith('under'):
+                            odd = _to_float(row.get('Under Cards Odd', row.get('Under Odd', 0)))
+                    odds_source = str(
+                        row.get('Odds Source Cards', row.get('Odds Source', '')) or ''
+                    ).strip()
+                    used_synth = False
+                    if odd <= 1.0:
+                        if not allow_synth:
+                            continue
+                        odd = synth
+                        used_synth = True
+                        odds_source = 'synthetic'
+                    elif not odds_source:
+                        odds_source = 'flashscore'
+                    # Build a mutable row view with Cards Odd for _common_fields.
+                    crow = row.copy()
+                    crow[odd_col] = odd
+                    crow[conf_col] = conf
+                    ev_raw = crow.get(ev_col, '')
+                    if used_synth or ev_raw == '' or ev_raw is None or (
+                            isinstance(ev_raw, float) and ev_raw != ev_raw):
+                        crow[ev_col] = conf * odd - 1.0
+                    if kelly_col not in crow.index or crow.get(kelly_col, '') in ('', None):
+                        crow[kelly_col] = '0%'
+                    cols = (bet_type, sel, odd_col, conf_col, ev_col, kelly_col)
+                    if bool(cards_cfg.get('bet_value')) and not used_synth:
                         vb = build_value_bet(crow, *cols)
                         if vb:
-                            vb['odds_source'] = 'synthetic'
+                            vb['odds_source'] = odds_source
                             value_bets.append(vb)
                     if cards_cfg.get('bet_conviction'):
-                        # Conviction needs odd ≥ conv_min_odds; synth usually clears it.
                         cb = build_conviction_bet(crow, *cols)
                         if cb:
-                            cb['odds_source'] = 'synthetic'
+                            cb['odds_source'] = odds_source
                             conviction_bets.append(cb)
                     if cards_cfg.get('bet_model'):
                         mb = build_model_bet(crow, *cols)
                         if mb:
-                            mb['odds_source'] = 'synthetic'
+                            mb['odds_source'] = odds_source
                             model_bets.append(mb)
-        elif cards_cfg.get('include_in_betting') and cards_cfg.get('enabled'):
-            print(f"[auto_wager] Cards betting on but missing {cards_path}")
+                    continue
+
+                vb = build_value_bet(row, bet_type, sel, odd_col, conf_col, ev_col, kelly_col)
+                if vb: value_bets.append(vb)
+                cb = build_conviction_bet(row, bet_type, sel, odd_col, conf_col, ev_col, kelly_col)
+                if cb: conviction_bets.append(cb)
+                mb = build_model_bet(row, bet_type, sel, odd_col, conf_col, ev_col, kelly_col)
+                if mb: model_bets.append(mb)
+
+        # Fallback: Cards not yet merged into predictions_*.csv — join sibling file.
+        if cards_enabled and not has_cards_cols:
+            cards_date = os.path.basename(latest_file).replace('predictions_', '').replace('.csv', '')
+            cards_path = os.path.join(OUTPUT_DIR, f'predictions_cards_{cards_date}.csv')
+            if os.path.isfile(cards_path):
+                try:
+                    cdf = pd.read_csv(cards_path)
+                except Exception as e:
+                    print(f"[auto_wager] Could not read {cards_path}: {e}")
+                    cdf = None
+                if cdf is not None and not cdf.empty:
+                    print(f"[auto_wager] Cards cols missing on main CSV; "
+                          f"using sibling {os.path.basename(cards_path)}")
+                    for _, crow in cdf.iterrows():
+                        conf = _to_float(crow.get('Conf Cards', 0))
+                        if conf < cards_min_conf:
+                            continue
+                        crow = crow.copy()
+                        pick = str(crow.get('Prediction Cards', '') or '')
+                        odd = _to_float(crow.get('Prediction Cards Odd', 0))
+                        if odd <= 1.0:
+                            if pick.lower().startswith('over'):
+                                odd = _to_float(crow.get('Over Odd', 0))
+                            elif pick.lower().startswith('under'):
+                                odd = _to_float(crow.get('Under Odd', 0))
+                        odds_source = str(crow.get('Odds Source', '') or '').strip()
+                        used_synth = False
+                        if odd <= 1.0:
+                            if not allow_synth:
+                                continue
+                            odd = synth
+                            used_synth = True
+                            odds_source = 'synthetic'
+                        elif not odds_source:
+                            odds_source = 'flashscore'
+                        crow['Prediction Cards'] = pick
+                        crow['Cards Odd'] = odd
+                        crow['Conf Cards'] = conf
+                        ev_raw = crow.get('EV Cards', '')
+                        if used_synth or ev_raw == '' or ev_raw is None or (
+                                isinstance(ev_raw, float) and ev_raw != ev_raw):
+                            crow['EV Cards'] = conf * odd - 1.0
+                        else:
+                            crow['EV Cards'] = _to_float(ev_raw)
+                        crow['Kelly Cards'] = crow.get('Kelly Cards') or '0%'
+                        cols = ('Cards', 'Prediction Cards', 'Cards Odd',
+                                'Conf Cards', 'EV Cards', 'Kelly Cards')
+                        if bool(cards_cfg.get('bet_value')) and not used_synth:
+                            vb = build_value_bet(crow, *cols)
+                            if vb:
+                                vb['odds_source'] = odds_source
+                                value_bets.append(vb)
+                        if cards_cfg.get('bet_conviction'):
+                            cb = build_conviction_bet(crow, *cols)
+                            if cb:
+                                cb['odds_source'] = odds_source
+                                conviction_bets.append(cb)
+                        if cards_cfg.get('bet_model'):
+                            mb = build_model_bet(crow, *cols)
+                            if mb:
+                                mb['odds_source'] = odds_source
+                                model_bets.append(mb)
+            else:
+                print(f"[auto_wager] Cards betting on but missing Cards cols "
+                      f"and {cards_path}")
 
         def _enforce_daily_cap(bets, bankroll, cap_pct, lane_name):
             """Per-lane daily cap: rank-and-truncate — keep the best bets at full

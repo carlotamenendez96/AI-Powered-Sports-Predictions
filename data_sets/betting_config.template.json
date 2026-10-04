@@ -39,8 +39,9 @@
                 "use_availability_at_serve": false,
                 "include_in_betting": true,
                 "synthetic_odd": 1.9,
+                "allow_synthetic_fallback": false,
                 "min_confidence": 0.55,
-                "bet_value": false,
+                "bet_value": true,
                 "bet_conviction": true,
                 "bet_model": true
             }
