@@ -1,15 +1,27 @@
 import scrapy
 import csv
 import os
-import json
-from scrapy_playwright.page import PageMethod
+
 
 class StandingsSpider(scrapy.Spider):
     name = "standings"
-    
-    
+
+    # Flashscore rate-limits / flakes under the default concurrency of 4.
+    custom_settings = {
+        "CONCURRENT_REQUESTS": 2,
+        "CONCURRENT_REQUESTS_PER_DOMAIN": 2,
+        "DOWNLOAD_DELAY": 2,
+    }
+
+    TABLE_SELECTOR = ".ui-table__row"
+    TABLE_WAIT_MS = 45_000
+    TABLE_ATTEMPTS = 3
+
     def start_requests(self):
-        csv_path = os.path.join(self.settings.get('PROJECT_ROOT', '.'), 'data_sets/standings_form_flashscore_direct_links.csv')
+        csv_path = os.path.join(
+            self.settings.get("PROJECT_ROOT", "."),
+            "data_sets/standings_form_flashscore_direct_links.csv",
+        )
         if not os.path.isfile(csv_path):
             raise FileNotFoundError(
                 f"Missing {csv_path}. Seed it from "
@@ -17,180 +29,233 @@ class StandingsSpider(scrapy.Spider):
                 "(bin/update_leagues_data.sh does this automatically)."
             )
 
-        with open(csv_path, 'r', encoding='utf-8-sig') as f:
-            reader = csv.DictReader(f, delimiter=';')
+        with open(csv_path, "r", encoding="utf-8-sig") as f:
+            reader = csv.DictReader(f, delimiter=";")
             for row in reader:
                 meta = {
-                    'country': row['COUNTRY'],
-                    'league': row['LEAGUE'],
-                    'playwright': True,
-                    'playwright_include_page': True,
+                    "country": row["COUNTRY"],
+                    "league": row["LEAGUE"],
+                    "playwright": True,
+                    "playwright_include_page": True,
                     "playwright_page_goto_kwargs": {
                         "wait_until": "domcontentloaded",
-                        "timeout": 60000
-                    }
+                        "timeout": 60000,
+                    },
                 }
-                
-                # Request 1: Standings (Overall -> Home -> Away)
+
                 yield scrapy.Request(
-                    url=row['STANDINGS_OVERALL'],
+                    url=row["STANDINGS_OVERALL"],
                     callback=self.parse_standings,
                     meta=meta.copy(),
-                    dont_filter=True
-                )
-                
-                # Request 2: Form (Overall -> Home -> Away)
-                yield scrapy.Request(
-                    url=row['FORM_LAST_5_OVERALL'],
-                    callback=self.parse_form,
-                    meta=meta.copy(),
-                    dont_filter=True
+                    dont_filter=True,
+                    errback=self._errback_close_page,
                 )
 
-                # Request 3: Form Last 10 (Overall -> Home -> Away)
-                # Check if column exists avoids key error for old CSVs
-                if 'FORM_LAST_10_OVERALL' in row and row['FORM_LAST_10_OVERALL']:
-                     meta_10 = meta.copy()
-                     meta_10['form_type'] = 'last_10'
-                     yield scrapy.Request(
-                        url=row['FORM_LAST_10_OVERALL'],
+                yield scrapy.Request(
+                    url=row["FORM_LAST_5_OVERALL"],
+                    callback=self.parse_form,
+                    meta=meta.copy(),
+                    dont_filter=True,
+                    errback=self._errback_close_page,
+                )
+
+                if row.get("FORM_LAST_10_OVERALL"):
+                    meta_10 = meta.copy()
+                    meta_10["form_type"] = "last_10"
+                    yield scrapy.Request(
+                        url=row["FORM_LAST_10_OVERALL"],
                         callback=self.parse_form,
                         meta=meta_10,
-                        dont_filter=True
+                        dont_filter=True,
+                        errback=self._errback_close_page,
                     )
+
+    async def _errback_close_page(self, failure):
+        page = failure.request.meta.get("playwright_page")
+        if page:
+            try:
+                await page.close()
+            except Exception:
+                pass
+
+    @staticmethod
+    def _variant_url(base_url: str, variant: str) -> str:
+        """Build /standings/home/ or /form/away/ from the overall URL."""
+        base = base_url.rstrip("/") + "/"
+        if variant == "overall":
+            return base
+        return f"{base}{variant}/"
+
+    async def _dismiss_consent(self, page):
+        """Best-effort cookie / consent dismiss — Flashscore often blocks the table behind it."""
+        selectors = (
+            "#onetrust-accept-btn-handler",
+            "button#onetrust-accept-btn-handler",
+            "button:has-text('Accept All')",
+            "button:has-text('I Accept')",
+            "button:has-text('Accept')",
+            ".acceptCookies",
+        )
+        for sel in selectors:
+            try:
+                loc = page.locator(sel).first
+                if await loc.count() == 0:
+                    continue
+                if await loc.is_visible(timeout=800):
+                    await loc.click(timeout=2000)
+                    await page.wait_for_timeout(400)
+                    return
+            except Exception:
+                continue
+
+    async def _wait_for_table(self, page, label: str = ""):
+        """Wait for the standings/form table, reloading on transient Flashscore flakes."""
+        await self._dismiss_consent(page)
+        last_err = None
+        for attempt in range(1, self.TABLE_ATTEMPTS + 1):
+            try:
+                await page.wait_for_selector(
+                    self.TABLE_SELECTOR, timeout=self.TABLE_WAIT_MS
+                )
+                return
+            except Exception as e:
+                last_err = e
+                self.logger.warning(
+                    "Table not ready%s (attempt %d/%d): %s",
+                    f" [{label}]" if label else "",
+                    attempt,
+                    self.TABLE_ATTEMPTS,
+                    e,
+                )
+                if attempt < self.TABLE_ATTEMPTS:
+                    try:
+                        await page.reload(
+                            wait_until="domcontentloaded", timeout=60000
+                        )
+                    except Exception as reload_err:
+                        self.logger.warning("Reload failed: %s", reload_err)
+                    await self._dismiss_consent(page)
+                    await page.wait_for_timeout(2000)
+        raise last_err
+
+    async def _goto_and_extract(self, page, url: str, table_type: str, label: str):
+        await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+        await self._wait_for_table(page, label=label)
+        data = await self.extract_table(page, table_type)
+        if not data:
+            raise RuntimeError(f"Parsed 0 rows from {url}")
+        return data
 
     async def parse_standings(self, response):
         page = response.meta["playwright_page"]
-        league = response.meta['league']
-        country = response.meta['country']
-        
-        # 1. Overall
-        await page.wait_for_selector(".ui-table__row")
-        overall_data = await self.extract_table(page, "standings")
-        yield {
-            'type': 'standings_overall',
-            'country': country,
-            'league': league,
-            'table': overall_data
-        }
-        
-        # 2. Home
-        try:
-            # Click Home Tab
-            # Selectors can be tricky, using text "Home" in the subTabs might work better
-            # Or use the href pattern from CSV if we wanted, but clicking is usually safer in SPA
-            # XPath: //a[contains(@href, 'standings/home')]
-            await page.click("a[href*='standings/home']")
-            await page.wait_for_timeout(1000) # Wait for table update
-            await page.wait_for_selector(".ui-table__row")
-            home_data = await self.extract_table(page, "standings")
-            yield {
-                'type': 'standings_home',
-                'country': country,
-                'league': league,
-                'table': home_data
-            }
-        except Exception as e:
-            self.logger.error(f"Error extracting Home standings for {league}: {e}")
+        league = response.meta["league"]
+        country = response.meta["country"]
+        base_url = response.url
 
-        # 3. Away
         try:
-            await page.click("a[href*='standings/away']")
-            await page.wait_for_timeout(1000)
-            await page.wait_for_selector(".ui-table__row")
-            away_data = await self.extract_table(page, "standings")
-            yield {
-                'type': 'standings_away',
-                'country': country,
-                'league': league,
-                'table': away_data
-            }
-        except Exception as e:
-            self.logger.error(f"Error extracting Away standings for {league}: {e}")
-            
-        await page.close()
+            await self._wait_for_table(page, label=f"{league} standings/overall")
+            overall_data = await self.extract_table(page, "standings")
+            if overall_data:
+                yield {
+                    "type": "standings_overall",
+                    "country": country,
+                    "league": league,
+                    "table": overall_data,
+                }
+            else:
+                self.logger.error(
+                    "Empty overall standings for %s — skipping home/away", league
+                )
+                return
+
+            for variant in ("home", "away"):
+                try:
+                    url = self._variant_url(base_url, variant)
+                    data = await self._goto_and_extract(
+                        page, url, "standings", f"{league} standings/{variant}"
+                    )
+                    yield {
+                        "type": f"standings_{variant}",
+                        "country": country,
+                        "league": league,
+                        "table": data,
+                    }
+                except Exception as e:
+                    self.logger.error(
+                        "Error extracting %s standings for %s: %s",
+                        variant.capitalize(),
+                        league,
+                        e,
+                    )
+        finally:
+            await page.close()
 
     async def parse_form(self, response):
         page = response.meta["playwright_page"]
-        league = response.meta['league']
-        country = response.meta['country']
-        # Default to 'last_5' if not set
-        form_type = response.meta.get('form_type', 'last_5') 
-        
-        # 1. Overall Form
-        await page.wait_for_selector(".ui-table__row")
-        overall_data = await self.extract_table(page, "form")
-        yield {
-            'type': f'{form_type}_matches_overall',
-            'country': country,
-            'league': league,
-            'table': overall_data
-        }
-        
-        # 2. Home Form
-        try:
-            await page.click("a[href*='form/home']")
-            await page.wait_for_timeout(1000)
-            await page.wait_for_selector(".ui-table__row")
-            home_data = await self.extract_table(page, "form")
-            yield {
-                'type': f'{form_type}_matches_home',
-                'country': country,
-                'league': league,
-                'table': home_data
-            }
-        except: pass
+        league = response.meta["league"]
+        country = response.meta["country"]
+        form_type = response.meta.get("form_type", "last_5")
+        base_url = response.url
 
-        # 3. Away Form
         try:
-            await page.click("a[href*='form/away']")
-            await page.wait_for_timeout(1000)
-            await page.wait_for_selector(".ui-table__row")
-            away_data = await self.extract_table(page, "form")
-            yield {
-                'type': f'{form_type}_matches_away',
-                'country': country,
-                'league': league,
-                'table': away_data
-            }
-        except: pass
-        
-        await page.close()
+            await self._wait_for_table(page, label=f"{league} {form_type}/overall")
+            overall_data = await self.extract_table(page, "form")
+            if overall_data:
+                yield {
+                    "type": f"{form_type}_matches_overall",
+                    "country": country,
+                    "league": league,
+                    "table": overall_data,
+                }
+            else:
+                self.logger.error(
+                    "Empty overall form (%s) for %s — skipping home/away",
+                    form_type,
+                    league,
+                )
+                return
+
+            for variant in ("home", "away"):
+                try:
+                    url = self._variant_url(base_url, variant)
+                    data = await self._goto_and_extract(
+                        page, url, "form", f"{league} {form_type}/{variant}"
+                    )
+                    yield {
+                        "type": f"{form_type}_matches_{variant}",
+                        "country": country,
+                        "league": league,
+                        "table": data,
+                    }
+                except Exception as e:
+                    self.logger.error(
+                        "Error extracting %s form (%s) for %s: %s",
+                        variant,
+                        form_type,
+                        league,
+                        e,
+                    )
+        finally:
+            await page.close()
 
     async def extract_table(self, page, table_type):
-        # Identify rows
-        rows = await page.query_selector_all(".ui-table__row")
-        self.logger.info(f"Extracting {table_type}: Found {len(rows)} rows.")
+        rows = await page.query_selector_all(self.TABLE_SELECTOR)
+        self.logger.info("Extracting %s: Found %d rows.", table_type, len(rows))
         data = []
         for row in rows:
             text = await row.inner_text()
-            lines = text.split('\n')
-            # Format varies slightly but usually: Rank, Team, MP, W, D, L, Goals, Pts, Form?
-            # Standings: 1. \n Team \n MP \n W \n D \n L \n GF:GA \n GD \n Pts \n ? \n Form...
-            
+            lines = text.split("\n")
+
             try:
-                # Rank
-                rank = lines[0].replace('.', '')
-                
-                # Team (Lines[1], sometimes Lines[2] if promotion marker?)
-                # Usually lines[1] is Team.
+                rank = lines[0].replace(".", "")
                 team = lines[1]
-                
-                # MP
                 mp = lines[2]
-                
+
                 if table_type == "standings":
-                    # W, D, L
                     w = lines[3]
                     d = lines[4]
                     l = lines[5]
-                    # Goals (28:9)
                     goals = lines[6]
-                    # GD (19) or Pts?
-                    # In debug output: 28:9 \n 19 \n 33
-                    # So lines[7] is GD, lines[8] is Pts.
-                    # Verify length
-                    
                     item = {
                         "rank": rank,
                         "team_name": team,
@@ -199,57 +264,43 @@ class StandingsSpider(scrapy.Spider):
                         "draws": d,
                         "losses": l,
                         "goals": goals,
-                        "goals_difference": lines[7] if len(lines)>7 else 0,
-                        "points": lines[8] if len(lines)>8 else 0
+                        "goals_difference": lines[7] if len(lines) > 7 else 0,
+                        "points": lines[8] if len(lines) > 8 else 0,
                     }
                     data.append(item)
-                    
                 else:
-                    # Form Table
-                    # Rank, Team, MP, W, D, L, Goals, Pts, FormString
-                    # In form table, Flashscore shows "Form" column with icons.
-                    # Text dump of Last 5 Form usually includes the W D L chars?
-                    # Debug output showed empty form results?
-                    # Let's extract Form String explicitly via selectors
-                    
-                    # W, D, L logic is same usually
                     w = lines[3]
                     d = lines[4]
                     l = lines[5]
                     goals = lines[6]
-                    pts = lines[7] if ":" not in lines[7] else lines[8] # Careful with goals position
-                    
-                    # Explicitly get form icons
+                    pts = lines[7] if ":" not in lines[7] else lines[8]
+
                     form_icons = await row.query_selector_all(".tableCellFormIcon")
                     form_str = ""
                     if form_icons:
-                         texts = [await i.inner_text() for i in form_icons]
-                         # Filter out empty, newlines, or '?'
-                         texts = [t.strip() for t in texts if t.strip() and t.strip() != '?']
-                         form_str = "|".join(texts)
-                    
+                        texts = [await i.inner_text() for i in form_icons]
+                        texts = [
+                            t.strip() for t in texts if t.strip() and t.strip() != "?"
+                        ]
+                        form_str = "|".join(texts)
+
                     item = {
                         "rank": rank,
                         "team_name": team,
                         "matches_played": mp,
-                        "last_5_results": form_str, # W|W|L...
+                        "last_5_results": form_str,
                         "goals": goals,
-                        "goals_difference": "N/A", # Form table often doesn't show GD explicity in text dump position? 
-                        # Actually Flashscore form table: Rank, Team, MP, W, D, L, Goals, Pts, Form
-                        # It doesn't show GD usually. It shows "Goals".
-                        # User asked for "goals difference". I can calc it from Goals (e.g. 10:2 -> +8)
-                        "points": pts
+                        "goals_difference": "N/A",
+                        "points": pts,
                     }
-                    
-                    # Calc GD
+
                     if ":" in goals:
                         gf, ga = goals.split(":")
                         item["goals_difference"] = int(gf) - int(ga)
-                        
+
                     data.append(item)
 
-            except Exception as e:
-                # self.logger.warning(f"Error parsing row: {e}")
+            except Exception:
                 continue
-                
+
         return data

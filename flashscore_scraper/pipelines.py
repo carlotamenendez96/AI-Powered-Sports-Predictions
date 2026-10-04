@@ -66,6 +66,14 @@ class StandingsPipeline:
         
         for key, rows in self.data_store.items():
             filepath = os.path.join(self.base_dir, f"{key}.json")
+            # Never clobber a previous good scrape with an empty [] — Flashscore
+            # flakes often leave home/away empty while overall succeeds. Keep the
+            # stale file so predictions degrade gracefully instead of reading zero.
+            if not rows and os.path.isfile(filepath):
+                spider.logger.warning(
+                    f"Skipping write of empty {key}.json — keeping previous file on disk"
+                )
+                continue
             with open(filepath, 'w') as f:
                 json.dump(rows, f, indent=2)
             spider.logger.info(f"Saved {len(rows)} rows to {filepath}")
